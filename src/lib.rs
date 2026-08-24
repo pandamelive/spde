@@ -1,4 +1,5 @@
 //! SPDE lib：下载内核，无文件IO，纯内存逻辑
+
 pub mod model {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
@@ -31,3 +32,9 @@ pub mod model {
         InstanceExit { meta: EventMeta, normal_exit: bool },
     }
 }
+
+pub mod downloader;
+
+// 对外导出，上层直接 use spde::{xxx}
+pub use model::{EventMeta, SpdeEvent, TaskMetrics};
+pub use downloader::{DownloadOption, run_download};
