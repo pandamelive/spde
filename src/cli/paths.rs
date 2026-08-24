@@ -26,11 +26,11 @@ pub struct SpdePaths {
 }
 
 impl SpdePaths {
-    /// spde文件夹永远固定在exe同级目录，不受调用位置影响
+    /// spde-node文件夹永远固定在exe同级目录，不受调用位置影响
     pub fn from_exe_side() -> Result<Self, PathError> {
         let exe_path = env::current_exe().map_err(|_| PathError::ExePathNotFound)?;
         let exe_parent = exe_path.parent().ok_or(PathError::ExePathNotFound)?;
-        let root = exe_parent.join("spde");
+        let root = exe_parent.join("spde-node");
         Ok(Self::from_root(&root))
     }
 
