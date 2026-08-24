@@ -1,0 +1,23 @@
+[package]
+name = "spde"
+version = "0.1.0"
+edition = "2021"
+description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+tokio = { version = "1.0", features = ["rt‑multi‑thread", "macros", "net", "io‑util"] }
+ctrlc = "3.4"
+thiserror = "1.0"
+
+[lib]
+crate‑type = ["lib"]
+
+[[bin]]
+name = "download‑engine‑cli"
+path = "src/bin/main.rs"
