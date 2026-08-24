@@ -1,4 +1,4 @@
-use crate::lib::model::{EventMeta, SpdeEvent};
+use crate::{EventMeta, SpdeEvent};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
