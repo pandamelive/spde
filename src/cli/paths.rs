@@ -6,7 +6,7 @@ use thiserror::Error;
 pub enum PathError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("base‑dir bin directory must exist")]
+    #[error("base-dir bin directory must exist")]
     BinDirMissing,
 }
 
@@ -33,8 +33,8 @@ impl SpdePaths {
             config_dir,
             config_file: config_dir.join("config.yaml"),
             data_dir,
-            node_id_file: data_dir.join("node‑id.json"),
-            run_history_file: data_dir.join("run‑history.jsonl"),
+            node_id_file: data_dir.join("node-id.json"),
+            run_history_file: data_dir.join("run-history.jsonl"),
         }
     }
 
