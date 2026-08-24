@@ -1,0 +1,88 @@
+name: Release SPDE
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: spde-x86_64-windows.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: spde-x86_64-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: spde-aarch64-linux-musl
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: spde-x86_64-macos
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: spde-aarch64-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for Linux aarch64)
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build with cross
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/spde"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            bin="${bin}.exe"
+          fi
+          cp "$bin" "${{ matrix.artifact }}"
+          if [ "${{ matrix.os }}" != "windows-latest" ]; then
+            chmod +x "${{ matrix.artifact }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SPDE ${{ github.ref_name }}
+          generate_release_notes: true
+          files: spde-*
