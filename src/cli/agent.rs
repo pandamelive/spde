@@ -73,23 +73,6 @@ fn api_client(token: &str) -> Result<Client> {
     Ok(b.build()?)
 }
 
-fn download_client(cfg: &SpdeConfig) -> Result<Client> {
-    let mut builder = Client::builder()
-        .timeout(std::time::Duration::from_secs(cfg.global.timeout))
-        .http1_only()
-        .tcp_nodelay(true);
-    if cfg.global.skip_tls_verify {
-        builder = builder.danger_accept_invalid_certs(true);
-    }
-    if !cfg.proxy.https_proxy.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::https(cfg.proxy.https_proxy.trim())?);
-    }
-    if !cfg.proxy.http_proxy.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::http(cfg.proxy.http_proxy.trim())?);
-    }
-    Ok(builder.build()?)
-}
-
 // ── 主入口 ───────────────────────────────────────────────
 
 pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String) -> Result<()> {
@@ -145,7 +128,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     eprintln!("[agent] registered node_id={}", node_id);
 
     // 5. 启动 WebSocket 客户端
-    let ws = WsClient::spawn(node_id, master.clone(), token.clone());
+    let ws = WsClient::spawn(node_id, master.clone(), token.clone(), paths.base_dir.clone());
 
     // 6. 共享状态
     let active = Arc::new(AtomicU32::new(0));
@@ -185,30 +168,19 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     pk_cfg.global.max_concurrent
                 );
 
-                // 用 PK config 的参数构建下载客户端和保存目录
-                let dl = Arc::new(download_client(&pk_cfg)?);
-                let save_dir = resolve_save_dir(&paths.base_dir, &pk_cfg.output.save_path);
-                tokio::fs::create_dir_all(&save_dir).await?;
-
-                let connections = pk_cfg.global.connections_per_file;
-                let retry = pk_cfg.global.retry_times;
-                let dry_run = pk_cfg.global.dry_run;
+                // 全局并发信号量（max_concurrent 是节点级，不按任务覆盖）
                 let sem = Arc::new(Semaphore::new(pk_cfg.global.max_concurrent.max(1) as usize));
 
-                // 同步任务
+                // 同步任务（每个任务自己解析覆盖参数）
                 sync_tasks(
-                    &pk_cfg.direct_tasks,
+                    &pk_cfg,
                     &running,
                     &ws,
-                    &dl,
-                    &save_dir,
                     &active,
                     &bytes_total,
                     &last_error,
                     &sem,
-                    connections,
-                    retry,
-                    dry_run,
+                    &paths.base_dir,
                     node_id,
                 )
                 .await;
@@ -267,23 +239,76 @@ fn resolve_save_dir(base_dir: &PathBuf, save_path: &str) -> PathBuf {
     }
 }
 
+// ── 任务级参数解析 ──────────────────────────────────────
+
+struct TaskParams {
+    connections: u32,
+    retry: u32,
+    dry_run: bool,
+    timeout: u64,
+    skip_tls_verify: bool,
+    save_dir: PathBuf,
+    http_proxy: String,
+    https_proxy: String,
+}
+
+fn resolve_task_params(
+    task: &crate::cli::config::TaskItem,
+    cfg: &SpdeConfig,
+    base_dir: &PathBuf,
+) -> TaskParams {
+    let connections = task
+        .connections_per_file
+        .unwrap_or(cfg.global.connections_per_file);
+    let retry = task.retry_times.unwrap_or(cfg.global.retry_times);
+    let dry_run = task.dry_run.unwrap_or(cfg.global.dry_run);
+    let timeout = task.timeout.unwrap_or(cfg.global.timeout);
+    let skip_tls_verify = task.skip_tls_verify.unwrap_or(cfg.global.skip_tls_verify);
+    let save_path = task.save_path.as_deref().unwrap_or(&cfg.output.save_path);
+    let save_dir = resolve_save_dir(base_dir, save_path);
+    TaskParams {
+        connections,
+        retry,
+        dry_run,
+        timeout,
+        skip_tls_verify,
+        save_dir,
+        http_proxy: cfg.proxy.http_proxy.clone(),
+        https_proxy: cfg.proxy.https_proxy.clone(),
+    }
+}
+
+fn build_task_client(p: &TaskParams) -> Result<Client> {
+    let mut builder = Client::builder()
+        .timeout(std::time::Duration::from_secs(p.timeout))
+        .http1_only()
+        .tcp_nodelay(true);
+    if p.skip_tls_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    if !p.https_proxy.trim().is_empty() {
+        builder = builder.proxy(reqwest::Proxy::https(p.https_proxy.trim())?);
+    }
+    if !p.http_proxy.trim().is_empty() {
+        builder = builder.proxy(reqwest::Proxy::http(p.http_proxy.trim())?);
+    }
+    Ok(builder.build()?)
+}
+
 // ── 任务同步 ─────────────────────────────────────────────
 
 async fn sync_tasks(
-    tasks: &[crate::cli::config::TaskItem],
+    cfg: &SpdeConfig,
     running: &Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>>,
     ws: &WsClient,
-    dl: &Arc<Client>,
-    save_dir: &PathBuf,
     active: &Arc<AtomicU32>,
     bytes_total: &Arc<AtomicU64>,
     last_error: &Arc<Mutex<Option<String>>>,
     sem: &Arc<Semaphore>,
-    connections: u32,
-    retry: u32,
-    dry_run: bool,
+    base_dir: &PathBuf,
     node_id: Uuid,
 ) {
+    let tasks = &cfg.direct_tasks;
     let enabled_ids: HashSet<Uuid> = tasks
         .iter()
         .filter(|t| t.enable)
@@ -315,22 +340,19 @@ async fn sync_tasks(
             continue;
         }
 
+        let params = resolve_task_params(task, cfg, base_dir);
         let handle = spawn_download_task(
             dispatch_id,
             task.task_id,
             task.name.clone(),
             task.url.clone(),
             task.filename.clone(),
+            params,
             ws.clone(),
-            dl.clone(),
-            save_dir.clone(),
             active.clone(),
             bytes_total.clone(),
             last_error.clone(),
             sem.clone(),
-            connections,
-            retry,
-            dry_run,
             node_id,
         );
         run.insert(dispatch_id, handle);
@@ -345,16 +367,12 @@ fn spawn_download_task(
     name: String,
     url: String,
     filename: String,
+    params: TaskParams,
     ws: WsClient,
-    dl: Arc<Client>,
-    save_dir: PathBuf,
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
     sem: Arc<Semaphore>,
-    connections: u32,
-    retry: u32,
-    dry_run: bool,
     _node_id: Uuid,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -363,14 +381,26 @@ fn spawn_download_task(
         };
         active.fetch_add(1, Ordering::Relaxed);
 
+        // 任务级参数构建客户端和保存目录
+        let dl = match build_task_client(&params) {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                eprintln!("[download] build client failed for {}: {}", name, e);
+                active.fetch_sub(1, Ordering::Relaxed);
+                drop(permit);
+                return;
+            }
+        };
+        let _ = tokio::fs::create_dir_all(&params.save_dir).await;
+
         // 通知 PK 任务开始
         ws.send_task_started(dispatch_id).await;
 
-        let file_path = save_dir.join(&filename);
+        let file_path = params.save_dir.join(&filename);
         eprintln!("[download] start {} -> {:?}", name, file_path);
         let started = Instant::now();
 
-        let result = download_file(&dl, &url, file_path, connections, retry, dry_run).await;
+        let result = download_file(&dl, &url, file_path, params.connections, params.retry, params.dry_run).await;
 
         let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) =
             match result {

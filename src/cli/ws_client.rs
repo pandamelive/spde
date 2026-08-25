@@ -1,6 +1,7 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +48,11 @@ enum ClientMsg<'a> {
 enum ServerMsg {
     ConfigChanged,
     Ping,
+    DeleteFile {
+        filename: String,
+        #[serde(default)]
+        save_path: Option<String>,
+    },
 }
 
 // ── 任务报告参数 ─────────────────────────────────────────
@@ -78,7 +84,7 @@ pub struct WsClient {
 
 impl WsClient {
     /// 启动 WebSocket 客户端（后台自动重连）
-    pub fn spawn(node_id: Uuid, master: String, token: String) -> Self {
+    pub fn spawn(node_id: Uuid, master: String, token: String, base_dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<String>(128);
         let config_notify = Arc::new(Notify::new());
         let connected = Arc::new(AtomicBool::new(false));
@@ -90,6 +96,7 @@ impl WsClient {
             rx,
             config_notify.clone(),
             connected.clone(),
+            base_dir,
         ));
 
         Self {
@@ -169,6 +176,7 @@ async fn connection_loop(
     mut rx: mpsc::Receiver<String>,
     config_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
+    base_dir: PathBuf,
 ) {
     let ws_base = ws_base(&master);
     let ws_url = format!("{}/api/v1/agent/ws?node_id={}", ws_base, node_id);
@@ -199,6 +207,22 @@ async fn connection_loop(
                                                 let pong = serde_json::to_string(&ClientMsg::Pong).unwrap_or_default();
                                                 if write.send(Message::Text(pong.into())).await.is_err() {
                                                     break;
+                                                }
+                                            }
+                                            ServerMsg::DeleteFile { filename, save_path } => {
+                                                let dir = match save_path {
+                                                    Some(sp) if !sp.is_empty() => {
+                                                        let p = PathBuf::from(&sp);
+                                                        if p.is_absolute() { p } else { base_dir.join(p) }
+                                                    }
+                                                    _ => base_dir.join("download"),
+                                                };
+                                                let file_path = dir.join(&filename);
+                                                eprintln!("[ws] delete_file requested: {:?}", file_path);
+                                                match tokio::fs::remove_file(&file_path).await {
+                                                    Ok(_) => eprintln!("[ws] deleted: {:?}", file_path),
+                                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                                    Err(e) => eprintln!("[ws] delete failed: {e}"),
                                                 }
                                             }
                                         }

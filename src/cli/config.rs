@@ -106,6 +106,21 @@ pub struct TaskItem {
     pub task_id: Option<Uuid>,
     #[serde(default)]
     pub dispatch_id: Option<Uuid>,
+    // ── 任务级下载参数覆盖（None 时用 global 段默认值） ──
+    #[serde(default)]
+    pub max_concurrent: Option<u32>,
+    #[serde(default)]
+    pub connections_per_file: Option<u32>,
+    #[serde(default)]
+    pub retry_times: Option<u32>,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub skip_tls_verify: Option<bool>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    #[serde(default)]
+    pub save_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
