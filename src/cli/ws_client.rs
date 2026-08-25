@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
-use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
@@ -231,13 +230,10 @@ async fn connection_loop(
     }
 }
 
-async fn connect_ws(ws_url: &str, token: &str) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
-    let mut builder = Request::builder().uri(ws_url);
-    if !token.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", token));
-    }
-    let request = builder.body(()).map_err(|e| anyhow::anyhow!("ws request build: {e}"))?;
-    let (ws_stream, _resp) = connect_async(request).await?;
+async fn connect_ws(ws_url: &str, _token: &str) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+    // 直接传 URL，tungstenite 自动构建完整握手请求（含 Sec-WebSocket-Key）
+    // PK 端 WebSocket 不验证 token，仅通过 node_id query param 识别节点
+    let (ws_stream, _resp) = connect_async(ws_url).await?;
     Ok(ws_stream)
 }
 
