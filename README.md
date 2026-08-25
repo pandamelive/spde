@@ -2,7 +2,7 @@
 
 PandaNetPL 生态统一下载中心，单点 CLI 实现。
 
-> 当前版本：v0.2.0
+> 当前版本：v0.2.1
 > 支持平台：Windows x86_64 / Linux x86_64 musl / Linux aarch64 musl / macOS x86_64 / macOS aarch64
 
 ## 特性
