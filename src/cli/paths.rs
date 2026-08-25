@@ -67,7 +67,11 @@ impl SpdePaths {
         fs::create_dir_all(&self.data_dir)?;
 
         if !self.config_file.exists() {
-            let minimal_yaml = r#"# SPDE minimal config
+            let minimal_yaml = r#"# SPDE config
+agent:
+  master: ""
+  node_id: null
+  heartbeat_interval_secs: 5
 global:
   work_dir: null
   max_concurrent: 4
@@ -82,6 +86,9 @@ output:
 proxy:
   http_proxy: ""
   https_proxy: ""
+controller:
+  url: ""
+  token: ""
 direct_tasks: []
 "#;
             fs::write(&self.config_file, minimal_yaml)?;

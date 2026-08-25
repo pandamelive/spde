@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -28,6 +29,19 @@ fn default_max_concurrent() -> u32 {
 }
 fn default_save_path() -> String {
     "./download".to_string()
+}
+fn default_heartbeat() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AgentConfig {
+    #[serde(default)]
+    pub master: String,
+    #[serde(default)]
+    pub node_id: Option<Uuid>,
+    #[serde(default = "default_heartbeat")]
+    pub heartbeat_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,15 +102,31 @@ pub struct TaskItem {
     pub enable: bool,
     pub url: String,
     pub filename: String,
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
+    #[serde(default)]
+    pub dispatch_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ControllerConfig {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SpdeConfig {
+    #[serde(default)]
+    pub agent: AgentConfig,
     pub global: GlobalConfig,
     #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub controller: ControllerConfig,
     #[serde(default)]
     pub direct_tasks: Vec<TaskItem>,
 }

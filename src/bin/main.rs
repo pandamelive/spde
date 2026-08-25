@@ -22,8 +22,17 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommand {
-    /// 启动服务
+    /// 启动下载服务（本地 config.yaml）
     Serve,
+    /// 接入 PK 主控，拉取任务并回传统计
+    Agent {
+        /// PK 地址，如 http://10.0.0.8:5566
+        #[arg(long)]
+        master: Option<String>,
+        /// 与 PK token 一致
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// 配置相关操作
     Config,
     /// 查看统计信息
@@ -254,6 +263,11 @@ async fn main() -> Result<()> {
     match cli.cmd {
         SubCommand::Serve => {
             run_serve_logic(&paths).await?;
+        }
+        SubCommand::Agent { master, token } => {
+            let master = master.unwrap_or_default();
+            let token = token.unwrap_or_default();
+            spde::cli::agent::run_agent(&paths, master, token).await?;
         }
         SubCommand::Config => {
             eprintln!("config subcommand done");
