@@ -47,6 +47,7 @@ enum ClientMsg<'a> {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
     ConfigChanged,
+    NewTask,
     Ping,
     DeleteFile {
         filename: String,
@@ -79,6 +80,7 @@ pub struct TaskReportParams<'a> {
 pub struct WsClient {
     tx: mpsc::Sender<String>,
     config_notify: Arc<Notify>,
+    task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
 }
 
@@ -87,6 +89,7 @@ impl WsClient {
     pub fn spawn(node_id: Uuid, master: String, token: String, base_dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<String>(128);
         let config_notify = Arc::new(Notify::new());
+        let task_notify = Arc::new(Notify::new());
         let connected = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(connection_loop(
@@ -95,6 +98,7 @@ impl WsClient {
             token,
             rx,
             config_notify.clone(),
+            task_notify.clone(),
             connected.clone(),
             base_dir,
         ));
@@ -102,6 +106,7 @@ impl WsClient {
         Self {
             tx,
             config_notify,
+            task_notify,
             connected,
         }
     }
@@ -111,9 +116,19 @@ impl WsClient {
         self.config_notify.notified().await;
     }
 
+    /// 等待 PK 推送 new_task 通知（共享待下发池有新任务）
+    pub async fn wait_new_task(&self) {
+        self.task_notify.notified().await;
+    }
+
     /// 主动触发一次 config 拉取（用于首次连接或重连后）
     pub fn notify_config_change(&self) {
         self.config_notify.notify_waiters();
+    }
+
+    /// 主动触发一次任务领取（用于首次连接或重连后）
+    pub fn notify_new_task(&self) {
+        self.task_notify.notify_waiters();
     }
 
     pub fn is_connected(&self) -> bool {
@@ -175,6 +190,7 @@ async fn connection_loop(
     token: String,
     mut rx: mpsc::Receiver<String>,
     config_notify: Arc<Notify>,
+    task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
     base_dir: PathBuf,
 ) {
@@ -186,8 +202,9 @@ async fn connection_loop(
             Ok(ws_stream) => {
                 connected.store(true, Ordering::SeqCst);
                 eprintln!("[ws] connected to {}", ws_url);
-                // 连接成功后通知拉一次 config
+                // 连接成功后通知拉一次 config 和尝试领取任务
                 config_notify.notify_waiters();
+                task_notify.notify_waiters();
 
                 let (mut write, mut read) = ws_stream.split();
 
@@ -202,6 +219,10 @@ async fn connection_loop(
                                             ServerMsg::ConfigChanged => {
                                                 eprintln!("[ws] config_changed received");
                                                 config_notify.notify_waiters();
+                                            }
+                                            ServerMsg::NewTask => {
+                                                eprintln!("[ws] new_task received");
+                                                task_notify.notify_waiters();
                                             }
                                             ServerMsg::Ping => {
                                                 let pong = serde_json::to_string(&ClientMsg::Pong).unwrap_or_default();

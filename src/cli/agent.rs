@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -36,6 +36,35 @@ struct RegisterReq {
 struct RegisterResp {
     node_id: Uuid,
     poll_interval_secs: u64,
+}
+
+/// 从 PK 领取到的任务详情
+#[derive(Debug, Deserialize, Clone)]
+struct ClaimResp {
+    dispatch_id: Uuid,
+    task_id: Uuid,
+    name: String,
+    url: String,
+    filename: String,
+    overrides: ClaimOverrides,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+struct ClaimOverrides {
+    #[serde(default)]
+    max_concurrent: Option<u32>,
+    #[serde(default)]
+    connections_per_file: Option<u32>,
+    #[serde(default)]
+    retry_times: Option<u32>,
+    #[serde(default)]
+    timeout: Option<u64>,
+    #[serde(default)]
+    skip_tls_verify: Option<bool>,
+    #[serde(default)]
+    dry_run: Option<bool>,
+    #[serde(default)]
+    save_path: Option<String>,
 }
 
 // ── 工具函数 ─────────────────────────────────────────────
@@ -76,11 +105,11 @@ fn api_client(token: &str) -> Result<Client> {
 // ── 主入口 ───────────────────────────────────────────────
 
 pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String) -> Result<()> {
-    // 1. 加载本地 config（取 controller.url/token 作为初始值）
+    // 1. 加载本地 config
     let local_cfg = crate::cli::config::load_config(&paths.config_file)
         .map_err(|e| anyhow::anyhow!("load local config: {e}"))?;
 
-    // 2. 确定 master 地址：--master > 本地 config.controller.url > 局域网扫描 > 等待
+    // 2. 确定 master 地址
     let master = if !master_arg.is_empty() {
         master_arg.trim_end_matches('/').to_string()
     } else if !local_cfg.controller.url.is_empty() {
@@ -130,13 +159,39 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 5. 启动 WebSocket 客户端
     let ws = WsClient::spawn(node_id, master.clone(), token.clone(), paths.base_dir.clone());
 
-    // 6. 共享状态
+    // 6. 拉取全局配置（max_concurrent / dry_run / save_path 等）
+    let global_cfg = match fetch_config(&api, &master, node_id).await {
+        Ok(cfg) => {
+            eprintln!(
+                "[agent] global config: max_concurrent={}, dry_run={}, save_path={}",
+                cfg.global.max_concurrent, cfg.global.dry_run, cfg.output.save_path
+            );
+            cfg
+        }
+        Err(e) => {
+            eprintln!("[agent] fetch global config failed, using local defaults: {e}");
+            local_cfg.clone()
+        }
+    };
+    let global_cfg = Arc::new(Mutex::new(global_cfg));
+
+    // 7. 共享状态
     let active = Arc::new(AtomicU32::new(0));
     let bytes_total = Arc::new(AtomicU64::new(0));
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let running: Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // 7. 定期状态上报（通过 WebSocket）
+    // 全局并发信号量
+    let max_concurrent = {
+        let cfg = global_cfg.lock().await;
+        cfg.global.max_concurrent.max(1) as usize
+    };
+    let sem = Arc::new(Semaphore::new(max_concurrent));
+
+    // 任务完成通知通道
+    let (task_done_tx, mut task_done_rx) = mpsc::channel::<()>(64);
+
+    // 8. 定期状态上报（通过 WebSocket）
     {
         let ws = ws.clone();
         let active = active.clone();
@@ -157,47 +212,73 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         });
     }
 
-    // 8. 主循环：等待 config 变化 → 拉 config → 同步任务
+    // 9. 主循环：claim 领取 → 并发执行 → 完成后继续领取
+    eprintln!("[agent] entering claim loop (max_concurrent={})", max_concurrent);
     loop {
-        // 拉取 PK 生成的 config.yaml
-        match fetch_config(&api, &master, node_id).await {
-            Ok(pk_cfg) => {
-                eprintln!(
-                    "[agent] config fetched: {} tasks, max_concurrent={}",
-                    pk_cfg.direct_tasks.len(),
-                    pk_cfg.global.max_concurrent
-                );
-
-                // 全局并发信号量（max_concurrent 是节点级，不按任务覆盖）
-                let sem = Arc::new(Semaphore::new(pk_cfg.global.max_concurrent.max(1) as usize));
-
-                // 同步任务（每个任务自己解析覆盖参数）
-                sync_tasks(
-                    &pk_cfg,
-                    &running,
-                    &ws,
-                    &active,
-                    &bytes_total,
-                    &last_error,
-                    &sem,
-                    &paths.base_dir,
-                    node_id,
-                )
-                .await;
+        // 如果还有空闲并发槽，尝试领取任务
+        let has_permit = sem.available_permits() > 0;
+        if has_permit {
+            match claim_task(&api, &master, node_id).await {
+                Ok(Some(task)) => {
+                    eprintln!(
+                        "[agent] claimed task: {} (dispatch_id={})",
+                        task.name, task.dispatch_id
+                    );
+                    let cfg = global_cfg.lock().await.clone();
+                    let handle = spawn_download_task(
+                        task,
+                        cfg,
+                        ws.clone(),
+                        active.clone(),
+                        bytes_total.clone(),
+                        last_error.clone(),
+                        sem.clone(),
+                        paths.base_dir.clone(),
+                        task_done_tx.clone(),
+                    );
+                    let dispatch_id = handle.0;
+                    running.lock().await.insert(dispatch_id, handle.1);
+                }
+                Ok(None) => {
+                    // 池子空，等待新任务通知或任务完成通知或全局配置变更
+                    tokio::select! {
+                        _ = ws.wait_new_task() => {
+                            eprintln!("[agent] new task notification, trying claim");
+                        }
+                        _ = ws.wait_config_change() => {
+                            // 全局配置可能变了，重新拉取
+                            if let Ok(cfg) = fetch_config(&api, &master, node_id).await {
+                                eprintln!("[agent] global config updated");
+                                *global_cfg.lock().await = cfg;
+                            }
+                        }
+                        _ = task_done_rx.recv() => {
+                            // 有任务完成了，再试试 claim
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            eprintln!("[agent] received exit signal, stopping");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[agent] claim failed: {e}, retry in 5s");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
             }
-            Err(e) => {
-                eprintln!("[agent] fetch config failed: {e}");
-            }
-        }
-
-        // 等待下一次 config 变化通知（或 ctrl+c）
-        tokio::select! {
-            _ = ws.wait_config_change() => {
-                eprintln!("[agent] config changed, re-fetching");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("[agent] received exit signal, stopping");
-                break;
+        } else {
+            // 并发满了，等待任务完成
+            tokio::select! {
+                _ = task_done_rx.recv() => {}
+                _ = ws.wait_config_change() => {
+                    if let Ok(cfg) = fetch_config(&api, &master, node_id).await {
+                        *global_cfg.lock().await = cfg;
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("[agent] received exit signal, stopping");
+                    break;
+                }
             }
         }
     }
@@ -212,7 +293,31 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     Ok(())
 }
 
-// ── 拉取 config ─────────────────────────────────────────
+// ── 领取任务 ─────────────────────────────────────────────
+
+async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<ClaimResp>> {
+    let url = format!("{master}/api/v1/agent/claim");
+    let resp = api
+        .post(&url)
+        .json(&serde_json::json!({ "node_id": node_id }))
+        .send()
+        .await
+        .context("claim request")?;
+
+    if resp.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(None);
+    }
+
+    let task: ClaimResp = resp
+        .error_for_status()
+        .context("claim rejected")?
+        .json()
+        .await
+        .context("claim json")?;
+    Ok(Some(task))
+}
+
+// ── 拉取全局 config ──────────────────────────────────────
 
 async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeConfig> {
     let url = format!("{master}/api/v1/nodes/{node_id}/config.yaml");
@@ -253,18 +358,21 @@ struct TaskParams {
 }
 
 fn resolve_task_params(
-    task: &crate::cli::config::TaskItem,
+    overrides: &ClaimOverrides,
     cfg: &SpdeConfig,
     base_dir: &PathBuf,
 ) -> TaskParams {
-    let connections = task
+    let connections = overrides
         .connections_per_file
         .unwrap_or(cfg.global.connections_per_file);
-    let retry = task.retry_times.unwrap_or(cfg.global.retry_times);
-    let dry_run = task.dry_run.unwrap_or(cfg.global.dry_run);
-    let timeout = task.timeout.unwrap_or(cfg.global.timeout);
-    let skip_tls_verify = task.skip_tls_verify.unwrap_or(cfg.global.skip_tls_verify);
-    let save_path = task.save_path.as_deref().unwrap_or(&cfg.output.save_path);
+    let retry = overrides.retry_times.unwrap_or(cfg.global.retry_times);
+    let dry_run = overrides.dry_run.unwrap_or(cfg.global.dry_run);
+    let timeout = overrides.timeout.unwrap_or(cfg.global.timeout);
+    let skip_tls_verify = overrides.skip_tls_verify.unwrap_or(cfg.global.skip_tls_verify);
+    let save_path = overrides
+        .save_path
+        .as_deref()
+        .unwrap_or(&cfg.output.save_path);
     let save_dir = resolve_save_dir(base_dir, save_path);
     TaskParams {
         connections,
@@ -295,112 +403,56 @@ fn build_task_client(p: &TaskParams) -> Result<Client> {
     Ok(builder.build()?)
 }
 
-// ── 任务同步 ─────────────────────────────────────────────
-
-async fn sync_tasks(
-    cfg: &SpdeConfig,
-    running: &Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>>,
-    ws: &WsClient,
-    active: &Arc<AtomicU32>,
-    bytes_total: &Arc<AtomicU64>,
-    last_error: &Arc<Mutex<Option<String>>>,
-    sem: &Arc<Semaphore>,
-    base_dir: &PathBuf,
-    node_id: Uuid,
-) {
-    let tasks = &cfg.direct_tasks;
-    let enabled_ids: HashSet<Uuid> = tasks
-        .iter()
-        .filter(|t| t.enable)
-        .filter_map(|t| t.dispatch_id)
-        .collect();
-
-    let mut run = running.lock().await;
-
-    // 停止消失的任务
-    run.retain(|dispatch_id, handle| {
-        if !enabled_ids.contains(dispatch_id) {
-            eprintln!("[agent] cancel removed task dispatch_id={}", dispatch_id);
-            handle.abort();
-            false
-        } else {
-            true
-        }
-    });
-
-    // 启动新任务
-    for task in tasks {
-        if !task.enable {
-            continue;
-        }
-        let Some(dispatch_id) = task.dispatch_id else {
-            continue;
-        };
-        if run.contains_key(&dispatch_id) {
-            continue;
-        }
-
-        let params = resolve_task_params(task, cfg, base_dir);
-        let handle = spawn_download_task(
-            dispatch_id,
-            task.task_id,
-            task.name.clone(),
-            task.url.clone(),
-            task.filename.clone(),
-            params,
-            ws.clone(),
-            active.clone(),
-            bytes_total.clone(),
-            last_error.clone(),
-            sem.clone(),
-            node_id,
-        );
-        run.insert(dispatch_id, handle);
-        eprintln!("[agent] started task {} (dispatch_id={})", task.name, dispatch_id);
-    }
-}
+// ── 下载任务 ─────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_download_task(
-    dispatch_id: Uuid,
-    task_id: Option<Uuid>,
-    name: String,
-    url: String,
-    filename: String,
-    params: TaskParams,
+    task: ClaimResp,
+    cfg: SpdeConfig,
     ws: WsClient,
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
     sem: Arc<Semaphore>,
-    _node_id: Uuid,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    base_dir: PathBuf,
+    task_done_tx: mpsc::Sender<()>,
+) -> (Uuid, JoinHandle<()>) {
+    let dispatch_id = task.dispatch_id;
+    let task_id = Some(task.task_id);
+    let name = task.name.clone();
+    let url = task.url.clone();
+    let filename = task.filename.clone();
+    let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
+
+    let handle = tokio::spawn(async move {
         let Ok(permit) = sem.acquire_owned().await else {
+            let _ = task_done_tx.send(()).await;
             return;
         };
         active.fetch_add(1, Ordering::Relaxed);
 
-        // 任务级参数构建客户端和保存目录
         let dl = match build_task_client(&params) {
             Ok(c) => Arc::new(c),
             Err(e) => {
                 eprintln!("[download] build client failed for {}: {}", name, e);
                 active.fetch_sub(1, Ordering::Relaxed);
                 drop(permit);
+                let _ = task_done_tx.send(()).await;
                 return;
             }
         };
         let _ = tokio::fs::create_dir_all(&params.save_dir).await;
 
-        // 通知 PK 任务开始
+        // 通知 PK 任务开始（claim 时已设为 Running，这里再确认一次）
         ws.send_task_started(dispatch_id).await;
 
         let file_path = params.save_dir.join(&filename);
         eprintln!("[download] start {} -> {:?}", name, file_path);
         let started = Instant::now();
 
-        let result = download_file(&dl, &url, file_path, params.connections, params.retry, params.dry_run).await;
+        let result =
+            download_file(&dl, &url, file_path, params.connections, params.retry, params.dry_run)
+                .await;
 
         let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) =
             match result {
@@ -443,7 +495,6 @@ fn spawn_download_task(
             avg
         );
 
-        // 通过 WebSocket 回报告
         ws.send_task_report(TaskReportParams {
             dispatch_id: Some(dispatch_id),
             task_id,
@@ -463,5 +514,8 @@ fn spawn_download_task(
 
         active.fetch_sub(1, Ordering::Relaxed);
         drop(permit);
-    })
+        let _ = task_done_tx.send(()).await;
+    });
+
+    (dispatch_id, handle)
 }

@@ -100,3 +100,15 @@ jobs:
           name: SPDE ${{ github.ref_name }}
           generate_release_notes: true
           files: spde-*
+
+  dispatch-pcdn-keeper:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger pcdn-keeper image rebuild
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.PAT_FOR_PCDNKEEPER }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/pandamelive/pcdn-keeper/dispatches \
+            -d '{"event_type":"upstream-release","client_payload":{"upstream":"spde","version":"${{ github.ref_name }}"}}'
