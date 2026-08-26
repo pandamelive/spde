@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Local;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -16,6 +17,14 @@ use crate::cli::history::get_or_create_node_id;
 use crate::cli::paths::SpdePaths;
 use crate::cli::ws_client::{TaskReportParams, WsClient};
 use crate::download_file;
+
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        std::eprint!("[{}] ", ts);
+        std::eprintln!($($arg)*);
+    }};
+}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCAN_PORTS: &[u16] = &[5566, 8080, 80, 8000, 3000];
@@ -36,6 +45,11 @@ struct RegisterReq {
 struct RegisterResp {
     node_id: Uuid,
     poll_interval_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiResp<T> {
+    data: T,
 }
 
 /// 从 PK 领取到的任务详情
@@ -115,7 +129,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     } else if !local_cfg.controller.url.is_empty() {
         local_cfg.controller.url.trim_end_matches('/').to_string()
     } else {
-        eprintln!("[agent] no master specified, scanning local network ...");
+        log!("[agent] no master specified, scanning local network ...");
         discover::discover_pk_wait(SCAN_PORTS).await?
     };
 
@@ -125,7 +139,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         local_cfg.controller.token.clone()
     };
 
-    eprintln!("[agent] master = {}", master);
+    log!("[agent] master = {}", master);
 
     // 3. 获取或生成 node_id
     let node_id = get_or_create_node_id(&paths.node_id_file)?;
@@ -134,7 +148,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
 
     // 4. register 到 PK
     let api = api_client(&token)?;
-    let reg: RegisterResp = api
+    let reg: ApiResp<RegisterResp> = api
         .post(format!("{master}/api/v1/agent/register"))
         .json(&RegisterReq {
             node_id: Some(node_id),
@@ -153,8 +167,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         .await
         .context("register json")?;
 
-    let node_id = reg.node_id;
-    eprintln!("[agent] registered node_id={}", node_id);
+    let node_id = reg.data.node_id;
+    log!("[agent] registered node_id={}", node_id);
 
     // 5. 启动 WebSocket 客户端
     let ws = WsClient::spawn(node_id, master.clone(), token.clone(), paths.base_dir.clone());
@@ -162,14 +176,14 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 6. 拉取全局配置（max_concurrent / dry_run / save_path 等）
     let global_cfg = match fetch_config(&api, &master, node_id).await {
         Ok(cfg) => {
-            eprintln!(
+            log!(
                 "[agent] global config: max_concurrent={}, dry_run={}, save_path={}",
                 cfg.global.max_concurrent, cfg.global.dry_run, cfg.output.save_path
             );
             cfg
         }
         Err(e) => {
-            eprintln!("[agent] fetch global config failed, using local defaults: {e}");
+            log!("[agent] fetch global config failed, using local defaults: {e}");
             local_cfg.clone()
         }
     };
@@ -212,73 +226,60 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         });
     }
 
-    // 9. 主循环：claim 领取 → 并发执行 → 完成后继续领取
-    eprintln!("[agent] entering claim loop (max_concurrent={})", max_concurrent);
+    // 9. 主循环：先占并发槽 → claim 领取 → 执行 → 完成后释放槽
+    log!("[agent] entering claim loop (max_concurrent={})", max_concurrent);
     loop {
-        // 如果还有空闲并发槽，尝试领取任务
-        let has_permit = sem.available_permits() > 0;
-        if has_permit {
-            match claim_task(&api, &master, node_id).await {
-                Ok(Some(task)) => {
-                    eprintln!(
-                        "[agent] claimed task: {} (dispatch_id={})",
-                        task.name, task.dispatch_id
-                    );
-                    let cfg = global_cfg.lock().await.clone();
-                    let handle = spawn_download_task(
-                        task,
-                        cfg,
-                        ws.clone(),
-                        active.clone(),
-                        bytes_total.clone(),
-                        last_error.clone(),
-                        sem.clone(),
-                        paths.base_dir.clone(),
-                        task_done_tx.clone(),
-                    );
-                    let dispatch_id = handle.0;
-                    running.lock().await.insert(dispatch_id, handle.1);
-                }
-                Ok(None) => {
-                    // 池子空，等待新任务通知或任务完成通知或全局配置变更
-                    tokio::select! {
-                        _ = ws.wait_new_task() => {
-                            eprintln!("[agent] new task notification, trying claim");
-                        }
-                        _ = ws.wait_config_change() => {
-                            // 全局配置可能变了，重新拉取
-                            if let Ok(cfg) = fetch_config(&api, &master, node_id).await {
-                                eprintln!("[agent] global config updated");
-                                *global_cfg.lock().await = cfg;
-                            }
-                        }
-                        _ = task_done_rx.recv() => {
-                            // 有任务完成了，再试试 claim
-                        }
-                        _ = tokio::signal::ctrl_c() => {
-                            eprintln!("[agent] received exit signal, stopping");
-                            break;
+        // 先获取 permit，确保不会超额领取（permit 在下载 task 内部释放）
+        let permit = match sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+
+        match claim_task(&api, &master, node_id).await {
+            Ok(Some(task)) => {
+                log!(
+                    "[agent] claimed task: {} (dispatch_id={})",
+                    task.name, task.dispatch_id
+                );
+                let cfg = global_cfg.lock().await.clone();
+                let handle = spawn_download_task(
+                    task,
+                    cfg,
+                    ws.clone(),
+                    active.clone(),
+                    bytes_total.clone(),
+                    last_error.clone(),
+                    permit,
+                    paths.base_dir.clone(),
+                    task_done_tx.clone(),
+                );
+                let dispatch_id = handle.0;
+                running.lock().await.insert(dispatch_id, handle.1);
+            }
+            Ok(None) => {
+                // 池子空，释放 permit 后等待通知
+                drop(permit);
+                tokio::select! {
+                    _ = ws.wait_new_task() => {
+                        log!("[agent] new task notification, trying claim");
+                    }
+                    _ = ws.wait_config_change() => {
+                        if let Ok(cfg) = fetch_config(&api, &master, node_id).await {
+                            log!("[agent] global config updated");
+                            *global_cfg.lock().await = cfg;
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("[agent] claim failed: {e}, retry in 5s");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    _ = task_done_rx.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {
+                        log!("[agent] received exit signal, stopping");
+                        break;
+                    }
                 }
             }
-        } else {
-            // 并发满了，等待任务完成
-            tokio::select! {
-                _ = task_done_rx.recv() => {}
-                _ = ws.wait_config_change() => {
-                    if let Ok(cfg) = fetch_config(&api, &master, node_id).await {
-                        *global_cfg.lock().await = cfg;
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("[agent] received exit signal, stopping");
-                    break;
-                }
+            Err(e) => {
+                drop(permit);
+                log!("[agent] claim failed: {e}, retry in 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
     }
@@ -286,7 +287,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 清理：取消所有运行中任务
     let mut run = running.lock().await;
     for (dispatch_id, handle) in run.drain() {
-        eprintln!("[agent] aborting task dispatch_id={}", dispatch_id);
+        log!("[agent] aborting task dispatch_id={}", dispatch_id);
         handle.abort();
     }
 
@@ -308,13 +309,13 @@ async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<
         return Ok(None);
     }
 
-    let task: ClaimResp = resp
+    let task: ApiResp<ClaimResp> = resp
         .error_for_status()
         .context("claim rejected")?
         .json()
         .await
         .context("claim json")?;
-    Ok(Some(task))
+    Ok(Some(task.data))
 }
 
 // ── 拉取全局 config ──────────────────────────────────────
@@ -413,7 +414,7 @@ fn spawn_download_task(
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
-    sem: Arc<Semaphore>,
+    permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<()>,
 ) -> (Uuid, JoinHandle<()>) {
@@ -425,16 +426,13 @@ fn spawn_download_task(
     let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
 
     let handle = tokio::spawn(async move {
-        let Ok(permit) = sem.acquire_owned().await else {
-            let _ = task_done_tx.send(()).await;
-            return;
-        };
+        // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
         let dl = match build_task_client(&params) {
             Ok(c) => Arc::new(c),
             Err(e) => {
-                eprintln!("[download] build client failed for {}: {}", name, e);
+                log!("[download] build client failed for {}: {}", name, e);
                 active.fetch_sub(1, Ordering::Relaxed);
                 drop(permit);
                 let _ = task_done_tx.send(()).await;
@@ -443,11 +441,11 @@ fn spawn_download_task(
         };
         let _ = tokio::fs::create_dir_all(&params.save_dir).await;
 
-        // 通知 PK 任务开始（claim 时已设为 Running，这里再确认一次）
+        // 通知 PK 任务开始
         ws.send_task_started(dispatch_id).await;
 
         let file_path = params.save_dir.join(&filename);
-        eprintln!("[download] start {} -> {:?}", name, file_path);
+        log!("[download] start {} -> {:?}", name, file_path);
         let started = Instant::now();
 
         let result =
@@ -487,7 +485,7 @@ fn spawn_download_task(
             0.0
         };
 
-        eprintln!(
+        log!(
             "[download] done {} status={} downloaded={}MB avg={:.1}MB/s",
             name,
             status,

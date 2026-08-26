@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Local;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -8,6 +9,14 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
+
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        std::eprint!("[{}] ", ts);
+        std::eprintln!($($arg)*);
+    }};
+}
 
 // ── 消息协议（与 PK 端 ws.rs 对应） ──────────────────────
 
@@ -201,7 +210,7 @@ async fn connection_loop(
         match connect_ws(&ws_url, &token).await {
             Ok(ws_stream) => {
                 connected.store(true, Ordering::SeqCst);
-                eprintln!("[ws] connected to {}", ws_url);
+                log!("[ws] connected to {}", ws_url);
                 // 连接成功后通知拉一次 config 和尝试领取任务
                 config_notify.notify_waiters();
                 task_notify.notify_waiters();
@@ -217,11 +226,11 @@ async fn connection_loop(
                                     if let Ok(server_msg) = serde_json::from_str::<ServerMsg>(&text) {
                                         match server_msg {
                                             ServerMsg::ConfigChanged => {
-                                                eprintln!("[ws] config_changed received");
+                                                log!("[ws] config_changed received");
                                                 config_notify.notify_waiters();
                                             }
                                             ServerMsg::NewTask => {
-                                                eprintln!("[ws] new_task received");
+                                                log!("[ws] new_task received");
                                                 task_notify.notify_waiters();
                                             }
                                             ServerMsg::Ping => {
@@ -239,11 +248,11 @@ async fn connection_loop(
                                                     _ => base_dir.join("download"),
                                                 };
                                                 let file_path = dir.join(&filename);
-                                                eprintln!("[ws] delete_file requested: {:?}", file_path);
+                                                log!("[ws] delete_file requested: {:?}", file_path);
                                                 match tokio::fs::remove_file(&file_path).await {
-                                                    Ok(_) => eprintln!("[ws] deleted: {:?}", file_path),
+                                                    Ok(_) => log!("[ws] deleted: {:?}", file_path),
                                                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                                    Err(e) => eprintln!("[ws] delete failed: {e}"),
+                                                    Err(e) => log!("[ws] delete failed: {e}"),
                                                 }
                                             }
                                         }
@@ -265,10 +274,10 @@ async fn connection_loop(
                 }
 
                 connected.store(false, Ordering::SeqCst);
-                eprintln!("[ws] disconnected, reconnecting in 3s");
+                log!("[ws] disconnected, reconnecting in 3s");
             }
             Err(e) => {
-                eprintln!("[ws] connect failed: {e}, retry in 3s");
+                log!("[ws] connect failed: {e}, retry in 3s");
             }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
