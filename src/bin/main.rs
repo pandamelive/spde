@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Local;
 use clap::{Parser, Subcommand};
-use reqwest::Client;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use spde::cli::config::{load_config, SpdeConfig};
 use spde::cli::paths::SpdePaths;
-use spde::{download_file, DownloadMetrics};
+use spde::{build_default_manager, DownloadTask, ProgressCallback, StderrProgress};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -39,30 +38,6 @@ pub enum SubCommand {
     Stats,
 }
 
-fn build_client(cfg: &SpdeConfig) -> Result<Client> {
-    let mut builder = Client::builder()
-        .timeout(std::time::Duration::from_secs(cfg.global.timeout))
-        .http1_only()
-        .tcp_nodelay(true);
-
-    if cfg.global.skip_tls_verify {
-        builder = builder.danger_accept_invalid_certs(true);
-    }
-
-    if !cfg.proxy.https_proxy.trim().is_empty() {
-        let p = reqwest::Proxy::https(cfg.proxy.https_proxy.trim())
-            .context("invalid https proxy")?;
-        builder = builder.proxy(p);
-    }
-    if !cfg.proxy.http_proxy.trim().is_empty() {
-        let p = reqwest::Proxy::http(cfg.proxy.http_proxy.trim())
-            .context("invalid http proxy")?;
-        builder = builder.proxy(p);
-    }
-
-    Ok(builder.build().context("build http client failed")?)
-}
-
 async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     eprintln!("serve starting ...");
     eprintln!("base_dir: {:?}", paths.base_dir);
@@ -81,7 +56,9 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         return Ok(());
     }
 
-    let client = build_client(&cfg)?;
+    // 统一调度器：所有协议（HTTP/FTP/SFTP/BT/本地文件）自动路由
+    let mgr = Arc::new(build_default_manager());
+    eprintln!("registered backends: {:?}", mgr.backend_names());
 
     // 输出目录：绝对路径直接用，相对路径基于 base_dir
     let save_dir = PathBuf::from(&cfg.output.save_path);
@@ -96,15 +73,22 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     eprintln!("save dir: {:?}", save_dir);
 
     let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent as usize));
-    let client = Arc::new(client);
     let cfg_connections = cfg.global.connections_per_file;
     let cfg_retry = cfg.global.retry_times;
     let cfg_dry_run = cfg.global.dry_run;
+    let cfg_skip_tls = cfg.global.skip_tls_verify;
+    let cfg_proxy = if !cfg.proxy.https_proxy.trim().is_empty() {
+        cfg.proxy.https_proxy.clone()
+    } else if !cfg.proxy.http_proxy.trim().is_empty() {
+        cfg.proxy.http_proxy.clone()
+    } else {
+        String::new()
+    };
 
     let overall_start = Instant::now();
     let history_file = paths.run_history_file.clone();
 
-    // 读取历史总下载量（从 run-history.jsonl 累加所有记录的 downloaded_bytes）
+    // 读取历史总下载量
     let mut historical_total: u64 = 0;
     if let Ok(content) = tokio::fs::read_to_string(&history_file).await {
         for line in content.lines() {
@@ -117,32 +101,52 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     }
 
     let mut handles = Vec::new();
-    for task in &enabled {
+    for task_cfg in &enabled {
         let permit = semaphore
             .clone()
             .acquire_owned()
             .await
             .context("acquire semaphore failed")?;
-        let client = client.clone();
-        let url = task.url.clone();
-        let name = task.name.clone();
-        let filename = task.filename.clone();
-        let file_path = save_dir.join(&task.filename);
+
+        let mgr = mgr.clone();
+        let url = task_cfg.url.clone();
+        let name = task_cfg.name.clone();
+        let filename = task_cfg.filename.clone();
+        let file_path = save_dir.join(&task_cfg.filename);
+        let proxy = cfg_proxy.clone();
 
         let handle = tokio::spawn(async move {
             eprintln!("[start] {} -> {:?}", name, file_path);
-            let result = download_file(&client, &url, file_path, cfg_connections, cfg_retry, cfg_dry_run).await;
+
+            // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
+            let max_conn = if cfg_connections == 0 { 1 } else { cfg_connections };
+            let task = DownloadTask {
+                uri: url.clone(),
+                save_path: file_path,
+                max_conn,
+                retry_times: cfg_retry,
+                dry_run: cfg_dry_run,
+                skip_tls_verify: cfg_skip_tls,
+                proxy,
+                ..Default::default()
+            };
+
+            let progress: Option<Arc<dyn ProgressCallback>> =
+                Some(Arc::new(StderrProgress::new(name.clone())));
+
+            let result = mgr.dispatch(task, progress).await;
             drop(permit);
+
             match result {
-                Ok(m) => {
+                Ok(o) => {
                     eprintln!(
                         "[done] {}  downloaded={}MB  chunks ok={} fail={}",
                         name,
-                        m.downloaded_bytes / 1024 / 1024,
-                        m.success_chunks,
-                        m.failed_chunks
+                        o.downloaded_bytes / 1024 / 1024,
+                        o.success_chunks,
+                        o.failed_chunks
                     );
-                    (name, url, filename, Ok(m))
+                    (name, url, filename, Ok(o))
                 }
                 Err(e) => {
                     eprintln!("[error] {}: {:#}", name, e);
@@ -162,31 +166,26 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         if let Ok((name, url, filename, result)) = h.await {
             let timestamp = Local::now().to_rfc3339();
             let record = match result {
-                Ok(m) => {
-                    total_bytes += m.downloaded_bytes;
-                    if m.status == "failed" {
+                Ok(o) => {
+                    total_bytes += o.downloaded_bytes;
+                    if o.status == "failed" || !o.is_success {
                         fail_count += 1;
                     } else {
                         success_count += 1;
                     }
-                    let avg_speed = if m.elapsed_secs > 0.0 {
-                        m.downloaded_bytes as f64 / m.elapsed_secs / 1024.0 / 1024.0
-                    } else {
-                        0.0
-                    };
                     json!({
                         "timestamp": timestamp,
                         "task_name": name,
                         "url": url,
                         "filename": filename,
-                        "file_size": m.total_size,
-                        "downloaded_bytes": m.downloaded_bytes,
-                        "elapsed_secs": m.elapsed_secs,
-                        "avg_speed_mbps": avg_speed,
-                        "status": m.status,
-                        "success_chunks": m.success_chunks,
-                        "failed_chunks": m.failed_chunks,
-                        "error_msg": m.error_msg
+                        "file_size": o.total_size,
+                        "downloaded_bytes": o.downloaded_bytes,
+                        "elapsed_secs": o.elapsed_secs,
+                        "avg_speed_mbps": o.avg_speed_mbps,
+                        "status": o.status,
+                        "success_chunks": o.success_chunks,
+                        "failed_chunks": o.failed_chunks,
+                        "error_msg": o.error_msg
                     })
                 }
                 Err(e) => {
@@ -247,15 +246,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
     let paths = SpdePaths::from_exe_side()?;
-
     eprintln!("spde work root: {:?}", paths.base_dir);
-
     paths
         .check_and_prepare()
         .context("初始化目录文件失败")?;
-
     paths
         .verify_integrity()
         .context("目录文件完整性校验失败")?;
@@ -276,6 +271,5 @@ async fn main() -> Result<()> {
             eprintln!("stats subcommand done");
         }
     }
-
     Ok(())
 }

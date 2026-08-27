@@ -1,6 +1,6 @@
 [package]
 name = "spde"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
 license = "MIT"
@@ -15,17 +15,24 @@ ctrlc = "3.4"
 hostname = "0.4"
 thiserror = "1.0"
 anyhow = "1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "io-util", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "io-util", "net", "sync", "process"] }
 futures-util = "0.3.34"
 tokio-tungstenite = "0.26"
-# 0.13 正确feature：rustls、stream、system-proxy、socks
-reqwest = { version = "0.13.4", features = ["rustls", "stream", "system-proxy", "socks", "json"] }
+reqwest = { version = "0.13.4", features = ["rustls", "stream", "system-proxy", "socks", "json", "http2"] }
 url = "2.5.8"
 async-trait = "0.1.92"
 chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+parking_lot = "0.12"
+futures-lite = "2"
+suppaftp = { version = "5", optional = true, features = ["async"] }
+librqbit = { version = "9", optional = true }
 
-
-
+[features]
+default = ["ftp", "torrent"]
+ftp = ["dep:suppaftp"]
+torrent = ["dep:librqbit"]
 
 [lib]
 crate-type = ["lib"]

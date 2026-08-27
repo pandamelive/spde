@@ -28,11 +28,22 @@ enum ClientMsg<'a> {
         active_tasks: u32,
         bytes_downloaded: u64,
         busy: bool,
+        total_speed_bps: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         last_error: Option<&'a str>,
     },
     TaskStarted {
         dispatch_id: Uuid,
+    },
+    TaskProgress {
+        dispatch_id: Uuid,
+        task_name: &'a str,
+        percent: f64,
+        downloaded_bytes: u64,
+        total_size: u64,
+        speed_bps: u64,
+        active_connections: u32,
+        elapsed_secs: f64,
     },
     TaskReport {
         dispatch_id: Option<Uuid>,
@@ -81,6 +92,18 @@ pub struct TaskReportParams<'a> {
     pub success_chunks: u64,
     pub failed_chunks: u64,
     pub error_msg: Option<&'a str>,
+}
+
+// ── 任务实时进度参数 ────────────────────────────────────
+pub struct TaskProgressParams<'a> {
+    pub dispatch_id: Uuid,
+    pub task_name: &'a str,
+    pub percent: f64,
+    pub downloaded_bytes: u64,
+    pub total_size: u64,
+    pub speed_bps: u64,
+    pub active_connections: u32,
+    pub elapsed_secs: f64,
 }
 
 // ── WsClient ─────────────────────────────────────────────
@@ -149,12 +172,14 @@ impl WsClient {
         active_tasks: u32,
         bytes_downloaded: u64,
         busy: bool,
+        total_speed_bps: u64,
         last_error: Option<&str>,
     ) {
         let msg = ClientMsg::Status {
             active_tasks,
             bytes_downloaded,
             busy,
+            total_speed_bps,
             last_error,
         };
         self.send_json(&msg).await;
@@ -162,6 +187,20 @@ impl WsClient {
 
     pub async fn send_task_started(&self, dispatch_id: Uuid) {
         let msg = ClientMsg::TaskStarted { dispatch_id };
+        self.send_json(&msg).await;
+    }
+
+    pub async fn send_task_progress(&self, p: TaskProgressParams<'_>) {
+        let msg = ClientMsg::TaskProgress {
+            dispatch_id: p.dispatch_id,
+            task_name: p.task_name,
+            percent: p.percent,
+            downloaded_bytes: p.downloaded_bytes,
+            total_size: p.total_size,
+            speed_bps: p.speed_bps,
+            active_connections: p.active_connections,
+            elapsed_secs: p.elapsed_secs,
+        };
         self.send_json(&msg).await;
     }
 

@@ -15,8 +15,8 @@ use crate::cli::config::SpdeConfig;
 use crate::cli::discover;
 use crate::cli::history::get_or_create_node_id;
 use crate::cli::paths::SpdePaths;
-use crate::cli::ws_client::{TaskReportParams, WsClient};
-use crate::download_file;
+use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
+use crate::downloader::{build_default_manager, DownloadOutput, DownloadTask, ProgressCallback, ProgressSnapshot};
 
 macro_rules! log {
     ($($arg:tt)*) => {{
@@ -79,6 +79,84 @@ struct ClaimOverrides {
     dry_run: Option<bool>,
     #[serde(default)]
     save_path: Option<String>,
+}
+
+// ── 实时进度共享状态 ─────────────────────────────────────
+#[derive(Clone)]
+struct TaskProgressState {
+    dispatch_id: Uuid,
+    task_name: String,
+    total_size: u64,
+    downloaded_bytes: u64,
+    speed_bps: u64,
+    percent: f64,
+    active_connections: u32,
+    elapsed_secs: f64,
+}
+
+type ProgressMap = Arc<Mutex<HashMap<Uuid, TaskProgressState>>>;
+
+/// WebSocket 进度回调：更新共享状态 + 推送进度消息给 PK
+struct WsProgress {
+    ws: WsClient,
+    dispatch_id: Uuid,
+    task_name: String,
+    progress_map: ProgressMap,
+}
+
+impl ProgressCallback for WsProgress {
+    fn on_progress(&self, s: ProgressSnapshot) {
+        let state = TaskProgressState {
+            dispatch_id: self.dispatch_id,
+            task_name: self.task_name.clone(),
+            total_size: s.total_size,
+            downloaded_bytes: s.downloaded_bytes,
+            speed_bps: s.speed_bps,
+            percent: s.percent,
+            active_connections: s.active_connections,
+            elapsed_secs: s.elapsed_secs,
+        };
+
+        // 更新共享状态（供 status_loop 汇总总速度）
+        let map = self.progress_map.clone();
+        let dispatch_id = self.dispatch_id;
+        tokio::spawn(async move {
+            map.lock().await.insert(dispatch_id, state);
+        });
+
+        // 推送单任务进度给 PK
+        let ws = self.ws.clone();
+        let task_name = self.task_name.clone();
+        let dispatch_id = self.dispatch_id;
+        let percent = s.percent;
+        let downloaded_bytes = s.downloaded_bytes;
+        let total_size = s.total_size;
+        let speed_bps = s.speed_bps;
+        let active_connections = s.active_connections;
+        let elapsed_secs = s.elapsed_secs;
+        tokio::spawn(async move {
+            ws.send_task_progress(TaskProgressParams {
+                dispatch_id,
+                task_name: &task_name,
+                percent,
+                downloaded_bytes,
+                total_size,
+                speed_bps,
+                active_connections,
+                elapsed_secs,
+            })
+            .await;
+        });
+    }
+
+    fn on_complete(&self, _output: DownloadOutput) {
+        // 任务完成时从共享状态移除
+        let map = self.progress_map.clone();
+        let dispatch_id = self.dispatch_id;
+        tokio::spawn(async move {
+            map.lock().await.remove(&dispatch_id);
+        });
+    }
 }
 
 // ── 工具函数 ─────────────────────────────────────────────
@@ -193,6 +271,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     let active = Arc::new(AtomicU32::new(0));
     let bytes_total = Arc::new(AtomicU64::new(0));
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let progress_map: ProgressMap = Arc::new(Mutex::new(HashMap::new()));
     let running: Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // 全局并发信号量
@@ -211,14 +290,26 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         let active = active.clone();
         let bytes_total = bytes_total.clone();
         let last_error = last_error.clone();
+        let progress_map = progress_map.clone();
+        // 状态上报间隔：复用 agent.heartbeat_interval_secs，默认10秒
+        let report_interval = {
+            let cfg = global_cfg.lock().await;
+            cfg.agent.heartbeat_interval_secs.max(1)
+        };
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(report_interval)).await;
+                // 汇总所有活跃任务的总速度
+                let total_speed: u64 = {
+                    let map = progress_map.lock().await;
+                    map.values().map(|s| s.speed_bps).sum()
+                };
                 let err = last_error.lock().await.clone();
                 ws.send_status(
                     active.load(Ordering::Relaxed),
                     bytes_total.load(Ordering::Relaxed),
                     active.load(Ordering::Relaxed) > 0,
+                    total_speed,
                     err.as_deref(),
                 )
                 .await;
@@ -249,6 +340,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     active.clone(),
                     bytes_total.clone(),
                     last_error.clone(),
+                    progress_map.clone(),
                     permit,
                     paths.base_dir.clone(),
                     task_done_tx.clone(),
@@ -387,6 +479,8 @@ fn resolve_task_params(
     }
 }
 
+// 保留：旧版 per-task HTTP client 构建，现已统一走 DownloadManager
+#[allow(dead_code)]
 fn build_task_client(p: &TaskParams) -> Result<Client> {
     let mut builder = Client::builder()
         .timeout(std::time::Duration::from_secs(p.timeout))
@@ -414,6 +508,7 @@ fn spawn_download_task(
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
+    progress_map: ProgressMap,
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<()>,
@@ -429,16 +524,9 @@ fn spawn_download_task(
         // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
-        let dl = match build_task_client(&params) {
-            Ok(c) => Arc::new(c),
-            Err(e) => {
-                log!("[download] build client failed for {}: {}", name, e);
-                active.fetch_sub(1, Ordering::Relaxed);
-                drop(permit);
-                let _ = task_done_tx.send(()).await;
-                return;
-            }
-        };
+        // 统一调度器：所有协议自动路由
+        let mgr = build_default_manager();
+
         let _ = tokio::fs::create_dir_all(&params.save_dir).await;
 
         // 通知 PK 任务开始
@@ -448,21 +536,45 @@ fn spawn_download_task(
         log!("[download] start {} -> {:?}", name, file_path);
         let started = Instant::now();
 
-        let result =
-            download_file(&dl, &url, file_path, params.connections, params.retry, params.dry_run)
-                .await;
+        // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
+        let max_conn = if params.connections == 0 { 1 } else { params.connections };
+        let task = DownloadTask {
+            uri: url.clone(),
+            save_path: file_path,
+            max_conn,
+            retry_times: params.retry,
+            dry_run: params.dry_run,
+            skip_tls_verify: params.skip_tls_verify,
+            ..Default::default()
+        };
+
+        // 构建 WS 进度回调：实时推送单任务进度 + 汇总到共享状态
+        let progress_cb: Option<Arc<dyn ProgressCallback>> = Some(Arc::new(WsProgress {
+            ws: ws.clone(),
+            dispatch_id,
+            task_name: name.clone(),
+            progress_map: progress_map.clone(),
+        }));
+
+        let result = mgr.dispatch(task, progress_cb).await;
 
         let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) =
             match result {
-                Ok(m) => (
-                    m.status,
-                    m.total_size,
-                    m.downloaded_bytes,
-                    m.elapsed_secs,
-                    m.success_chunks,
-                    m.failed_chunks,
-                    m.error_msg,
-                ),
+                Ok(o) => {
+                    // 任务成功时清除 last_error
+                    if o.is_success {
+                        *last_error.lock().await = None;
+                    }
+                    (
+                        o.status,
+                        o.total_size,
+                        o.downloaded_bytes,
+                        o.elapsed_secs,
+                        o.success_chunks as u64,
+                        o.failed_chunks as u64,
+                        o.error_msg,
+                    )
+                },
                 Err(e) => (
                     "failed".into(),
                     0,
