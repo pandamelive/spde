@@ -39,6 +39,12 @@ struct RegisterReq {
     arch: String,
     version: String,
     labels: Vec<String>,
+    /// 节点能力参数（JSON，灵活扩展，pk 不认识的字段透传）
+    capabilities: Option<serde_json::Value>,
+    /// 节点上报的最大并发任务数
+    max_concurrent: Option<u32>,
+    /// 节点上报的最大带宽上限 bps
+    max_bandwidth_bps: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,7 +232,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     let hostname = hostname_string();
     let (platform, arch) = platform_pair();
 
-    // 4. register 到 PK
+    // 4. register 到 PK（先从本地配置读取 max_concurrent 上报，注册后 pk 下发的值会覆盖）
+    let local_max_concurrent = local_cfg.global.max_concurrent.max(1);
     let api = api_client(&token)?;
     let reg: ApiResp<RegisterResp> = api
         .post(format!("{master}/api/v1/agent/register"))
@@ -237,6 +244,9 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
             arch,
             version: VERSION.into(),
             labels: vec![],
+            capabilities: Some(build_node_capabilities()),
+            max_concurrent: Some(local_max_concurrent),
+            max_bandwidth_bps: None,
         })
         .send()
         .await
@@ -428,6 +438,40 @@ async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeC
         .context("fetch config body")?;
     let cfg: SpdeConfig = serde_yaml::from_str(&text).context("parse config yaml")?;
     Ok(cfg)
+}
+
+/// 构建节点能力参数（上报给 pk，pk 不认识的字段透传）
+fn build_node_capabilities() -> serde_json::Value {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CORES: AtomicUsize = AtomicUsize::new(0);
+    let cores = if CORES.load(Ordering::Relaxed) == 0 {
+        let c = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        CORES.store(c, Ordering::Relaxed);
+        c
+    } else {
+        CORES.load(Ordering::Relaxed)
+    };
+
+    serde_json::json!({
+        "spde_version": VERSION,
+        "supported_protocols": ["http", "https"],
+        "features": {
+            "resume": true,
+            "multi_connection": true,
+            "retry": true,
+            "proxy": true,
+            "dry_run": true,
+        },
+        "hardware": {
+            "cpu_cores": cores,
+        },
+        "config_defaults": {
+            "connections_per_file": 16,
+            "retry_times": 3,
+            "timeout_secs": 30,
+            "resume": true,
+        }
+    })
 }
 
 fn resolve_save_dir(base_dir: &PathBuf, save_path: &str) -> PathBuf {
