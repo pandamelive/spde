@@ -386,6 +386,32 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 9. 主循环：先占并发槽 → claim 领取 → 执行 → 完成后释放槽
     log!("[agent] entering claim loop (max_concurrent={})", max_concurrent);
     loop {
+        // 检查节点是否被 pk 删除，如果被删除则立即暂停任务并重新注册
+        if ws.is_node_deleted() {
+            log!("[agent] node deleted by pk, pausing all tasks and re-registering...");
+            match register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await {
+                Ok(reg) => {
+                    if let Some(status) = &reg.status {
+                        if status == "online" {
+                            log!("[agent] re-register success, status=online, resuming normal operation");
+                            ws.clear_node_deleted();
+                        } else {
+                            log!("[agent] re-register status={}, waiting for pk approval, no new tasks will be claimed", status);
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        }
+                    } else {
+                        log!("[agent] re-register ok (no status field), resuming");
+                        ws.clear_node_deleted();
+                    }
+                }
+                Err(e) => {
+                    log!("[agent] re-register failed: {e}, retry in 10s");
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            }
+            continue;
+        }
+
         // 先获取 permit，确保不会超额领取（permit 在下载 task 内部释放）
         let permit = match sem.clone().acquire_owned().await {
             Ok(p) => p,
@@ -420,6 +446,9 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                 tokio::select! {
                     _ = ws.wait_new_task() => {
                         log!("[agent] new task notification, trying claim");
+                    }
+                    _ = ws.wait_node_deleted() => {
+                        log!("[agent] node deleted notification received, will re-register immediately");
                     }
                     _ = ws.wait_config_change() => {
                         if let Ok(cfg) = fetch_config(&api, &master, node_id).await {

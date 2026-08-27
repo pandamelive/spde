@@ -69,6 +69,8 @@ enum ServerMsg {
     ConfigChanged,
     NewTask,
     Ping,
+    /// 节点已被 pk 删除，应立即暂停任务并重新注册
+    NodeDeleted,
     DeleteFile {
         filename: String,
         #[serde(default)]
@@ -114,6 +116,10 @@ pub struct WsClient {
     config_notify: Arc<Notify>,
     task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
+    /// 节点已被 pk 删除，应暂停任务并重新注册
+    node_deleted: Arc<AtomicBool>,
+    /// 节点被删除时通知主循环
+    deleted_notify: Arc<Notify>,
 }
 
 impl WsClient {
@@ -123,6 +129,8 @@ impl WsClient {
         let config_notify = Arc::new(Notify::new());
         let task_notify = Arc::new(Notify::new());
         let connected = Arc::new(AtomicBool::new(false));
+        let node_deleted = Arc::new(AtomicBool::new(false));
+        let deleted_notify = Arc::new(Notify::new());
 
         tokio::spawn(connection_loop(
             node_id,
@@ -133,6 +141,8 @@ impl WsClient {
             task_notify.clone(),
             connected.clone(),
             base_dir,
+            node_deleted.clone(),
+            deleted_notify.clone(),
         ));
 
         Self {
@@ -140,6 +150,8 @@ impl WsClient {
             config_notify,
             task_notify,
             connected,
+            node_deleted,
+            deleted_notify,
         }
     }
 
@@ -151,6 +163,21 @@ impl WsClient {
     /// 等待 PK 推送 new_task 通知（共享待下发池有新任务）
     pub async fn wait_new_task(&self) {
         self.task_notify.notified().await;
+    }
+
+    /// 检查节点是否已被 pk 删除
+    pub fn is_node_deleted(&self) -> bool {
+        self.node_deleted.load(Ordering::SeqCst)
+    }
+
+    /// 清除节点删除标志（重新注册成功后调用）
+    pub fn clear_node_deleted(&self) {
+        self.node_deleted.store(false, Ordering::SeqCst);
+    }
+
+    /// 等待节点被删除（用于主循环唤醒）
+    pub async fn wait_node_deleted(&self) {
+        self.deleted_notify.notified().await;
     }
 
     /// 主动触发一次 config 拉取（用于首次连接或重连后）
@@ -241,6 +268,8 @@ async fn connection_loop(
     task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
     base_dir: PathBuf,
+    node_deleted: Arc<AtomicBool>,
+    deleted_notify: Arc<Notify>,
 ) {
     let ws_base = ws_base(&master);
     let ws_url = format!("{}/api/v1/agent/ws?node_id={}", ws_base, node_id);
@@ -277,6 +306,13 @@ async fn connection_loop(
                                                 if write.send(Message::Text(pong.into())).await.is_err() {
                                                     break;
                                                 }
+                                            }
+                                            ServerMsg::NodeDeleted => {
+                                                log!("[ws] node_deleted received, pausing tasks and triggering re-register");
+                                                node_deleted.store(true, Ordering::SeqCst);
+                                                deleted_notify.notify_waiters();
+                                                task_notify.notify_waiters();
+                                                config_notify.notify_waiters();
                                             }
                                             ServerMsg::DeleteFile { filename, save_path } => {
                                                 let dir = match save_path {
