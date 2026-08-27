@@ -52,6 +52,9 @@ struct RegisterReq {
 struct RegisterResp {
     node_id: Uuid,
     poll_interval_secs: u64,
+    /// 节点注册后的状态（online/pending）
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +207,40 @@ fn api_client(token: &str) -> Result<Client> {
 
 // ── 主入口 ───────────────────────────────────────────────
 
+/// 注册到 PK（可重复调用，用于定期重新注册或 WebSocket 重连后重新注册）
+async fn register_to_pk(
+    api: &Client,
+    master: &str,
+    node_id: Uuid,
+    hostname: &str,
+    platform: &str,
+    arch: &str,
+    local_max_concurrent: u32,
+) -> Result<RegisterResp> {
+    let reg: ApiResp<RegisterResp> = api
+        .post(format!("{master}/api/v1/agent/register"))
+        .json(&RegisterReq {
+            node_id: Some(node_id),
+            hostname: hostname.to_string(),
+            platform: platform.to_string(),
+            arch: arch.to_string(),
+            version: VERSION.into(),
+            labels: vec![],
+            capabilities: Some(build_node_capabilities()),
+            max_concurrent: Some(local_max_concurrent),
+            max_bandwidth_bps: None,
+        })
+        .send()
+        .await
+        .context("register request")?
+        .error_for_status()
+        .context("register rejected")?
+        .json()
+        .await
+        .context("register json")?;
+    Ok(reg.data)
+}
+
 pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String) -> Result<()> {
     // 1. 加载本地 config
     let local_cfg = crate::cli::config::load_config(&paths.config_file)
@@ -235,30 +272,17 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 4. register 到 PK（先从本地配置读取 max_concurrent 上报，注册后 pk 下发的值会覆盖）
     let local_max_concurrent = local_cfg.global.max_concurrent.max(1);
     let api = api_client(&token)?;
-    let reg: ApiResp<RegisterResp> = api
-        .post(format!("{master}/api/v1/agent/register"))
-        .json(&RegisterReq {
-            node_id: Some(node_id),
-            hostname,
-            platform,
-            arch,
-            version: VERSION.into(),
-            labels: vec![],
-            capabilities: Some(build_node_capabilities()),
-            max_concurrent: Some(local_max_concurrent),
-            max_bandwidth_bps: None,
-        })
-        .send()
-        .await
-        .context("register request")?
-        .error_for_status()
-        .context("register rejected")?
-        .json()
-        .await
-        .context("register json")?;
+    let reg = register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await?;
 
-    let node_id = reg.data.node_id;
-    log!("[agent] registered node_id={}", node_id);
+    let node_id = reg.node_id;
+    if let Some(status) = &reg.status {
+        log!("[agent] registered node_id={}, status={}", node_id, status);
+        if status == "pending" {
+            log!("[agent] 节点待审批，将定期重新注册等待 pk 同意");
+        }
+    } else {
+        log!("[agent] registered node_id={}", node_id);
+    }
 
     // 5. 启动 WebSocket 客户端
     let ws = WsClient::spawn(node_id, master.clone(), token.clone(), paths.base_dir.clone());
@@ -325,6 +349,36 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     err.as_deref(),
                 )
                 .await;
+            }
+        });
+    }
+
+    // 8.5 定期重新注册（每5分钟），确保节点状态同步，节点被删除后能重新注册进来
+    {
+        let api = api.clone();
+        let master = master.clone();
+        let hostname = hostname.clone();
+        let platform = platform.clone();
+        let arch = arch.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                match register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await {
+                    Ok(reg) => {
+                        if let Some(status) = &reg.status {
+                            if status == "pending" {
+                                log!("[agent] re-register: node still pending, waiting for pk approval");
+                            } else {
+                                log!("[agent] re-register: ok, status={}", status);
+                            }
+                        } else {
+                            log!("[agent] re-register: ok");
+                        }
+                    }
+                    Err(e) => {
+                        log!("[agent] re-register failed: {e}, will retry in 5min");
+                    }
+                }
             }
         });
     }
