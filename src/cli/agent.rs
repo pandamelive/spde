@@ -525,7 +525,7 @@ async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeC
 }
 
 /// 构建节点能力参数（上报给 pk，pk 不认识的字段透传）
-fn build_node_capabilities() -> serde_json::Value {
+pub(crate) fn build_node_capabilities() -> serde_json::Value {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CORES: AtomicUsize = AtomicUsize::new(0);
     let cores = if CORES.load(Ordering::Relaxed) == 0 {

@@ -21,6 +21,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommand {
+    /// 输出自描述能力清单（说明书）
+    Manifest,
     /// 启动下载服务（本地 config.yaml）
     Serve,
     /// 接入 PK 主控，拉取任务并回传统计
@@ -256,6 +258,10 @@ async fn main() -> Result<()> {
         .context("目录文件完整性校验失败")?;
 
     match cli.cmd {
+        SubCommand::Manifest => {
+            spde::cli::manifest::print_manifest();
+            return Ok(());
+        }
         SubCommand::Serve => {
             run_serve_logic(&paths).await?;
         }
