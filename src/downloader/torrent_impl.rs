@@ -82,7 +82,14 @@ impl DownloadBackend for TorrentDownloader {
         &self,
         task: DownloadTask,
         progress: Option<Arc<dyn ProgressCallback>>,
+        controller: Option<Arc<DownloadController>>,
     ) -> Result<DownloadOutput> {
+        // 任务取消检查
+        if let Some(ctrl) = &controller {
+            if ctrl.is_cancelled() {
+                anyhow::bail!("download cancelled by controller");
+            }
+        }
         let start = Instant::now();
         let mut output = DownloadOutput::default();
 

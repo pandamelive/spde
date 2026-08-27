@@ -44,7 +44,14 @@ impl DownloadBackend for FileDownloader {
         &self,
         task: DownloadTask,
         progress: Option<Arc<dyn ProgressCallback>>,
+        controller: Option<Arc<DownloadController>>,
     ) -> Result<DownloadOutput> {
+        // 任务取消检查
+        if let Some(ctrl) = &controller {
+            if ctrl.is_cancelled() {
+                anyhow::bail!("download cancelled by controller");
+            }
+        }
         let start = Instant::now();
         let src = Self::parse_uri(&task.uri)?;
         let dst = &task.save_path;

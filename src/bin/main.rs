@@ -134,7 +134,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             let progress: Option<Arc<dyn ProgressCallback>> =
                 Some(Arc::new(StderrProgress::new(name.clone())));
 
-            let result = mgr.dispatch(task, progress).await;
+            let result = mgr.dispatch(task, progress, None).await;
             drop(permit);
 
             match result {

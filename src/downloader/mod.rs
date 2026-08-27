@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -185,6 +186,76 @@ impl ProgressCallback for StderrProgress {
 }
 
 // ──────────────────────────────────────────────
+// 任务控制器（暂停/取消）
+// ──────────────────────────────────────────────
+
+/// 下载任务控制器：支持暂停、恢复、取消
+/// 可克隆（Arc 内部），在下载循环中定期检查状态
+#[derive(Clone)]
+pub struct DownloadController {
+    paused: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Default for DownloadController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DownloadController {
+    pub fn new() -> Self {
+        Self {
+            paused: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// 暂停任务（下载循环会等待，直到恢复或取消）
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// 恢复任务
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
+    /// 取消任务（下载循环会返回错误，任务终止）
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        // 取消时也解除暂停，让等待中的循环能检测到取消
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
+    /// 是否暂停
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// 是否已取消
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// 如果暂停则等待，直到恢复或取消。返回 false 表示被取消。
+    pub async fn wait_if_paused(&self) -> bool {
+        while self.is_paused() {
+            if self.is_cancelled() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        !self.is_cancelled()
+    }
+
+    /// 检查是否应该继续下载（未取消）。返回 false 表示应终止。
+    pub fn should_continue(&self) -> bool {
+        !self.is_cancelled()
+    }
+}
+
+// ──────────────────────────────────────────────
 // 后端抽象 Trait
 // ──────────────────────────────────────────────
 
@@ -200,6 +271,7 @@ pub trait DownloadBackend: Send + Sync {
         &self,
         task: DownloadTask,
         progress: Option<Arc<dyn ProgressCallback>>,
+        controller: Option<Arc<DownloadController>>,
     ) -> Result<DownloadOutput>;
     /// 停止任务（默认空实现）
     async fn stop(&self, _task_id: &str) -> Result<()> {
@@ -248,6 +320,7 @@ impl DownloadManager {
         &self,
         task: DownloadTask,
         progress: Option<Arc<dyn ProgressCallback>>,
+        controller: Option<Arc<DownloadController>>,
     ) -> Result<DownloadOutput> {
         let uri = task.uri.clone();
         let backend = self
@@ -255,7 +328,7 @@ impl DownloadManager {
             .iter()
             .find(|b| b.support_uri(&uri))
             .ok_or_else(|| anyhow!("没有匹配的下载后端，uri:{}", uri))?;
-        backend.run(task, progress).await
+        backend.run(task, progress, controller).await
     }
 
     /// 已注册后端列表

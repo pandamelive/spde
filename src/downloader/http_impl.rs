@@ -89,6 +89,7 @@ impl DownloadBackend for HttpDownloader {
         &self,
         task: DownloadTask,
         progress: Option<Arc<dyn ProgressCallback>>,
+        controller: Option<Arc<DownloadController>>,
     ) -> Result<DownloadOutput> {
         let name = task
             .save_path
@@ -139,6 +140,7 @@ impl DownloadBackend for HttpDownloader {
                 &task.headers,
                 task.dry_run,
                 total_size,
+                controller.clone(),
             )
             .await
         } else {
@@ -151,6 +153,7 @@ impl DownloadBackend for HttpDownloader {
                 chunk_size,
                 &name,
                 progress.clone(),
+                controller.clone(),
             )
             .await
         };
@@ -264,6 +267,7 @@ async fn download_single(
     headers: &[(String, String)],
     dry_run: bool,
     total_size: u64,
+    controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
     let mut output = DownloadOutput::default();
     output.total_size = total_size;
@@ -309,6 +313,12 @@ async fn download_single(
 
     let mut stream = resp.bytes_stream();
     while let Some(chunk_res) = stream.next().await {
+        // 暂停/取消检查
+        if let Some(ctrl) = &controller {
+            if !ctrl.wait_if_paused().await {
+                anyhow::bail!("download cancelled by controller");
+            }
+        }
         match chunk_res {
             Ok(chunk) => {
                 if let Some(file) = file_opt.as_mut() {
@@ -367,6 +377,7 @@ async fn download_chunked(
     chunk_size: u64,
     _name: &str,
     progress: Option<Arc<dyn ProgressCallback>>,
+    controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
     let part_path = std::path::PathBuf::from(format!("{}.part", task.save_path.display()));
 
@@ -457,9 +468,16 @@ async fn download_chunked(
         let dry_run = task.dry_run;
         let speed_limit = task.speed_limit;
 
+        let ctrl_clone = controller.clone();
         handles.push(tokio::spawn(async move {
             st.active_conns.fetch_add(1, Ordering::Relaxed);
             loop {
+                // 暂停/取消检查
+                if let Some(ctrl) = &ctrl_clone {
+                    if !ctrl.wait_if_paused().await {
+                        break;
+                    }
+                }
                 // 从队列取一个分片
                 let range = {
                     let mut q = st.queue.lock();

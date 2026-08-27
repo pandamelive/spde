@@ -16,7 +16,7 @@ use crate::cli::discover;
 use crate::cli::history::get_or_create_node_id;
 use crate::cli::paths::SpdePaths;
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
-use crate::downloader::{build_default_manager, DownloadOutput, DownloadTask, ProgressCallback, ProgressSnapshot};
+use crate::downloader::{build_default_manager, DownloadController, DownloadOutput, DownloadTask, ProgressCallback, ProgressSnapshot};
 
 macro_rules! log {
     ($($arg:tt)*) => {{
@@ -308,7 +308,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     let bytes_total = Arc::new(AtomicU64::new(0));
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let progress_map: ProgressMap = Arc::new(Mutex::new(HashMap::new()));
-    let running: Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let running: Arc<Mutex<HashMap<Uuid, (JoinHandle<()>, Arc<DownloadController>)>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // 全局并发信号量
     let max_concurrent = {
@@ -438,7 +438,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     task_done_tx.clone(),
                 );
                 let dispatch_id = handle.0;
-                running.lock().await.insert(dispatch_id, handle.1);
+                running.lock().await.insert(dispatch_id, (handle.1, handle.2));
             }
             Ok(None) => {
                 // 池子空，释放 permit 后等待通知
@@ -473,9 +473,10 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
 
     // 清理：取消所有运行中任务
     let mut run = running.lock().await;
-    for (dispatch_id, handle) in run.drain() {
+    for (dispatch_id, (handle, controller)) in run.drain() {
         log!("[agent] aborting task dispatch_id={}", dispatch_id);
-        handle.abort();
+        controller.cancel(); // 先通知下载器取消
+        handle.abort();      // 再强制终止任务
     }
 
     Ok(())
@@ -535,26 +536,183 @@ fn build_node_capabilities() -> serde_json::Value {
         CORES.load(Ordering::Relaxed)
     };
 
+    // 支持的协议（根据编译 feature 动态）
+    let mut protocols = vec!["http", "https", "ssh", "sftp", "file"];
+    #[cfg(feature = "ftp")]
+    {
+        protocols.push("ftp");
+    }
+    #[cfg(feature = "torrent")]
+    {
+        protocols.push("torrent");
+        protocols.push("magnet");
+    }
+
+    // 支持的 URI 格式
+    let mut uri_formats = vec!["http://", "https://", "ssh://", "sftp://", "file://"];
+    #[cfg(feature = "ftp")]
+    {
+        uri_formats.push("ftp://");
+    }
+    #[cfg(feature = "torrent")]
+    {
+        uri_formats.push("magnet:?xt=urn:btih:");
+    }
+
     serde_json::json!({
-        "spde_version": VERSION,
-        "supported_protocols": ["http", "https"],
-        "features": {
-            "resume": true,
-            "multi_connection": true,
-            "retry": true,
-            "proxy": true,
-            "dry_run": true,
+        // ── 一、基本信息 ──
+        "basic": {
+            "name": "spde",
+            "version": VERSION,
+            "rust_version": rustc_version_runtime(),
+            "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+            "description": "Super Download Engine - 多协议高性能下载引擎",
         },
+
+        // ── 二、支持的协议 ──
+        "supported_protocols": protocols,
+        "uri_formats": uri_formats,
+
+        // ── 三、下载功能特性 ──
+        "download_features": {
+            "resume": true,                    // 断点续传
+            "multi_connection": true,          // 多连接分片下载
+            "work_stealing": true,             // 工作窃取式调度
+            "chunked_download": true,          // 分片下载
+            "retry": true,                     // 自动重试
+            "proxy": true,                     // 代理支持
+            "tls_skip_verify": true,           // 跳过 TLS 证书校验
+            "dry_run": true,                   // 干跑模式（不写盘）
+            "speed_limit": true,               // 速度限制
+            "preallocate": true,               // 文件预分配
+            "progress_callback": true,         // 进度回调
+            "realtime_progress": true,         // 实时进度上报
+            "auto_connections": true,          // 自动连接数估算
+            "custom_headers": true,            // 自定义 HTTP Headers
+        },
+
+        // ── 四、任务控制能力 ──
+        "task_control": {
+            "pause": true,                     // 暂停单个任务
+            "resume": true,                    // 恢复单个任务
+            "cancel": true,                    // 取消单个任务
+            "pause_all": true,                 // 暂停所有任务
+            "resume_all": true,                // 恢复所有任务
+            "cancel_all": true,                // 取消所有任务
+            "controller": "DownloadController", // 统一控制器（Arc<AtomicBool>）
+            "pause_check_interval_ms": 100,    // 暂停检查间隔
+        },
+
+        // ── 五、可配置参数（pk 可下发覆盖） ──
+        "configurable_params": {
+            "max_concurrent": {
+                "type": "u32",
+                "default": 4,
+                "min": 1,
+                "max": 256,
+                "description": "最大并发下载任务数",
+            },
+            "connections_per_file": {
+                "type": "u32",
+                "default": 16,
+                "min": 1,
+                "max": 128,
+                "description": "每个文件的最大并发连接数",
+            },
+            "chunk_size": {
+                "type": "u64",
+                "default": 4194304,
+                "unit": "bytes",
+                "description": "分片大小（默认 4MB）",
+            },
+            "retry_times": {
+                "type": "u32",
+                "default": 3,
+                "min": 0,
+                "max": 100,
+                "description": "下载失败重试次数",
+            },
+            "timeout_secs": {
+                "type": "u64",
+                "default": 30,
+                "description": "连接/读取超时时间（秒）",
+            },
+            "speed_limit_bps": {
+                "type": "u64",
+                "default": 0,
+                "unit": "bytes/sec",
+                "description": "速度限制（0 = 不限速）",
+            },
+            "progress_interval_ms": {
+                "type": "u64",
+                "default": 500,
+                "description": "进度上报间隔（毫秒）",
+            },
+            "save_path": {
+                "type": "string",
+                "default": "./download",
+                "description": "默认保存路径",
+            },
+            "dry_run": {
+                "type": "bool",
+                "default": false,
+                "description": "干跑模式（不写盘，只测试下载）",
+            },
+            "skip_tls_verify": {
+                "type": "bool",
+                "default": false,
+                "description": "跳过 TLS 证书校验",
+            },
+            "proxy": {
+                "type": "string",
+                "default": "",
+                "description": "代理地址（空 = 不使用代理）",
+            },
+        },
+
+        // ── 六、硬件信息 ──
         "hardware": {
             "cpu_cores": cores,
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "family": std::env::consts::FAMILY,
         },
-        "config_defaults": {
-            "connections_per_file": 16,
-            "retry_times": 3,
-            "timeout_secs": 30,
-            "resume": true,
-        }
+
+        // ── 七、通信能力 ──
+        "communication": {
+            "websocket": true,                 // WebSocket 实时通信
+            "http_api": true,                  // HTTP API 通信
+            "heartbeat": true,                 // 心跳上报
+            "realtime_status": true,           // 实时状态上报
+            "task_progress_report": true,      // 单任务进度上报
+            "config_pull": true,               // 配置拉取（拉模式）
+            "task_claim": true,                // 任务领取（拉模式）
+            "heartbeat_interval_secs": 10,     // 默认心跳间隔
+            "websocket_reconnect_secs": 3,     // WebSocket 重连间隔
+        },
+
+        // ── 八、状态上报字段 ──
+        "status_report_fields": {
+            "node_level": ["active_tasks", "bytes_downloaded", "total_speed_bps", "last_error"],
+            "task_level": ["dispatch_id", "task_name", "percent", "speed_bps", "downloaded_bytes", "total_size", "active_connections", "elapsed_secs"],
+        },
+
+        // ── 九、运行模式 ──
+        "run_modes": ["agent", "standalone", "cli"],
+        "current_mode": "agent",
+
+        // ── 十、编译 feature ──
+        "compile_features": {
+            "ftp": cfg!(feature = "ftp"),
+            "torrent": cfg!(feature = "torrent"),
+            "default_features": true,
+        },
     })
+}
+
+/// 获取 Rust 编译器版本（编译时注入）
+fn rustc_version_runtime() -> &'static str {
+    option_env!("RUSTC_VERSION").unwrap_or("unknown")
 }
 
 fn resolve_save_dir(base_dir: &PathBuf, save_path: &str) -> PathBuf {
@@ -641,7 +799,7 @@ fn spawn_download_task(
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<()>,
-) -> (Uuid, JoinHandle<()>) {
+) -> (Uuid, JoinHandle<()>, Arc<DownloadController>) {
     let dispatch_id = task.dispatch_id;
     let task_id = Some(task.task_id);
     let name = task.name.clone();
@@ -649,7 +807,10 @@ fn spawn_download_task(
     let filename = task.filename.clone();
     let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
 
+    let controller = Arc::new(DownloadController::new());
+    let ctrl_clone = controller.clone();
     let handle = tokio::spawn(async move {
+        let _controller = ctrl_clone; // 移动到任务中，任务结束后自动 drop
         // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
@@ -685,7 +846,8 @@ fn spawn_download_task(
             progress_map: progress_map.clone(),
         }));
 
-        let result = mgr.dispatch(task, progress_cb).await;
+        let controller = Arc::new(DownloadController::new());
+        let result = mgr.dispatch(task, progress_cb, Some(controller.clone())).await;
 
         let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) =
             match result {
@@ -756,5 +918,5 @@ fn spawn_download_task(
         let _ = task_done_tx.send(()).await;
     });
 
-    (dispatch_id, handle)
+    (dispatch_id, handle, controller)
 }

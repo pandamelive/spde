@@ -76,7 +76,7 @@ pub async fn download_file(
         ..Default::default()
     };
 
-    let output = downloader.run(task, progress).await?;
+    let output = downloader.run(task, progress, None).await?;
 
     Ok(DownloadMetrics {
         downloaded_bytes: output.downloaded_bytes,
