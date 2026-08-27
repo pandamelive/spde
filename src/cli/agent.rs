@@ -42,6 +42,7 @@ struct RegisterReq {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RegisterResp {
     node_id: Uuid,
     poll_interval_secs: u64,
@@ -64,6 +65,7 @@ struct ClaimResp {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[allow(dead_code)]
 struct ClaimOverrides {
     #[serde(default)]
     max_concurrent: Option<u32>,
