@@ -1,6 +1,6 @@
 [package]
 name = "spde"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
 license = "MIT"
