@@ -28,6 +28,9 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
+# librqbit 通过 crypto-hash 引入 openssl，vendored 模式编译时自动下载编译 OpenSSL
+# 解决 musl/Windows 交叉编译时找不到系统 OpenSSL 的问题
+openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
 default = ["ftp", "torrent"]
