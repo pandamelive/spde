@@ -520,7 +520,7 @@ async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<
 // ── 拉取全局 config ──────────────────────────────────────
 
 async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeConfig> {
-    // 共享路径常量：/api/v1/nodes/{id}/config.yaml，替换 {id} 为实际节点 ID
+    // 共享路径常量 paths::NODE_CONFIG_YAML（含 {id} 占位符），替换为实际节点 ID
     let url = format!(
         "{master}{}",
         paths::NODE_CONFIG_YAML.replace("{id}", &node_id.to_string())

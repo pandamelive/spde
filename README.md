@@ -9,7 +9,7 @@ PandaNetPL 生态统一下载中心，单点 CLI 实现。支持本地独立运�
 - **强制依赖** `pandanetos` 共享库（path 依赖），统一协议路径常量（`protocol::paths`）、响应格式（`ApiResponse`/`ApiError`）、错误码、时间格式（UTC RFC3339）与配置标准，禁止维护私有协议与常量。
 - **标准一致性**：节点上报、任务领取、心跳等协议路径均与 PandaNetOS《标准规范》一致，不得出现与标准不一致的私有端点。
 
-> 当前版本：v0.3.0
+> 当前版本：v0.7.1
 > 支持平台：Windows x86_64 / Linux x86_64 musl / Linux aarch64 musl / macOS x86_64 / macOS aarch64
 
 ## 特性
@@ -29,16 +29,16 @@ PandaNetPL 生态统一下载中心，单点 CLI 实现。支持本地独立运�
 - SIGINT/SIGTERM 捕获，优雅退出
 - GitHub Actions 自动多平台编译 + Tag 触发自动 Release
 
-### v0.3.0 新增：Agent 模式（PK 主控集中调度）
+### Agent 模式（PK 主控集中调度）
 
 - **`spde agent` 子命令**：接入 PandaNetPL Controller（PK），由主控统一下发下载任务
 - **节点自动注册**：启动时向 PK 注册节点信息（hostname、平台、架构、版本），获取永久 node_id
-- **局域网自动发现**：未指定 master 时自动扫描局域网（端口 5566/8080/8/8000/3000）寻找 PK 服务端
+- **局域网自动发现**：未指定 master 时自动扫描局域网（端口 5566/8080/80/8000/3000）寻找 PK 服务端
 - **WebSocket 实时通信**：长连接接收任务变更通知，自动重连（断线 3 秒重试）
 - **动态任务同步**：PK 推送配置变更后自动拉取最新任务列表，增量启动/取消下载任务
 - **实时状态上报**：每 10 秒通过 WebSocket 上报活跃任务数、累计下载量、忙碌状态、最近错误
 - **任务级回报**：每个任务开始/完成时通过 WebSocket 回传详细统计（dispatch_id、task_id、速度、分片状态等）
-- **Token 鉴权**：支持 Bearer Token 与 PK 通信，API 与 WebSocket 均携带鉴权头
+- **Token 鉴权**：HTTP API（注册/领任务/拉配置）携带 Bearer Token；WebSocket 按 `node_id` query 参数识别节点（PK 端不校验 token）
 
 ## 快速开始
 
@@ -305,8 +305,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 4. 上传所有平台二进制作为 Assets
 
 ```bash
-git tag -a v0.3.0 -m "SPDE v0.3.0"
-git push origin v0.3.0
+git tag -a v0.7.1 -m "SPDE v0.7.1"
+git push origin v0.7.1
 ```
 
 编译完成后前往 Releases 页面下载：https://github.com/pandamelive/spde/releases
