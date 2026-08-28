@@ -135,6 +135,8 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                 dry_run,
                 skip_tls_verify,
                 proxy,
+                resume: params.resume,
+                timeout: params.timeout,
                 ..Default::default()
             };
 

@@ -108,8 +108,8 @@ impl DownloadBackend for FtpDownloader {
         let total_size = ftp.size(&remote_path).await.map(|s| s as u64).unwrap_or(0);
         output.total_size = total_size;
 
-        // 已存在且大小匹配 → 跳过
-        if !task.dry_run {
+        // 已存在且大小匹配 → 跳过（仅在开启断点续传时）
+        if task.resume && !task.dry_run {
             if let Ok(meta) = tokio::fs::metadata(&task.save_path).await {
                 if meta.len() == total_size && total_size > 0 {
                     output.status = "skipped".into();
@@ -143,15 +143,19 @@ impl DownloadBackend for FtpDownloader {
             }
         }
 
-        // 断点续传：检查本地已下载大小
-        let local_size = tokio::fs::metadata(&task.save_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
+        // 断点续传：沿用已有本地大小（resume=false 时从零开始）
+        let local_size = if task.resume {
+            tokio::fs::metadata(&task.save_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
-            .truncate(false)
+            .truncate(!task.resume)
             .write(true)
             .read(true)
             .open(&task.save_path)
@@ -163,7 +167,7 @@ impl DownloadBackend for FtpDownloader {
             .context("seek failed")?;
 
         // 设置 REST 断点
-        if local_size > 0 {
+        if local_size > 0 && task.resume {
             ftp.resume_transfer(local_size as usize)
                 .await
                 .context("ftp resume failed")?;
@@ -178,7 +182,14 @@ impl DownloadBackend for FtpDownloader {
         let mut buf = vec![0u8; 64 * 1024];
         let dl_start = Instant::now();
         let mut last_progress = Instant::now();
+        let deadline = task.timeout.map(|d| Instant::now() + d);
         loop {
+            // 超时检查
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    anyhow::bail!("download timed out");
+                }
+            }
             let n = data_stream
                 .read(&mut buf)
                 .await

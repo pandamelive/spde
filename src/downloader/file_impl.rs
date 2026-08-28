@@ -67,8 +67,8 @@ impl DownloadBackend for FileDownloader {
         let total_size = meta.len();
         output.total_size = total_size;
 
-        // 目标已存在且大小一致 → 跳过
-        if !task.dry_run {
+        // 目标已存在且大小一致 → 跳过（仅在开启断点续传时）
+        if task.resume && !task.dry_run {
             if let Ok(dst_meta) = fs::metadata(dst).await {
                 if dst_meta.len() == total_size && total_size > 0 {
                     output.status = "skipped".into();
@@ -115,8 +115,15 @@ impl DownloadBackend for FileDownloader {
         let dl_start = Instant::now();
         let mut last_progress = Instant::now();
         let mut copied: u64 = 0;
+        let deadline = task.timeout.map(|d| Instant::now() + d);
 
         loop {
+            // 超时检查
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    anyhow::bail!("download timed out");
+                }
+            }
             let n = src_file
                 .read(&mut buf)
                 .await

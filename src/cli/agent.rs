@@ -583,6 +583,8 @@ fn spawn_download_task(
             retry_times: params.retry,
             dry_run: params.dry_run,
             skip_tls_verify: params.skip_tls_verify,
+            resume: params.resume,
+            timeout: params.timeout,
             ..Default::default()
         };
 

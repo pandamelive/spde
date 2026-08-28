@@ -199,16 +199,28 @@ impl DownloadBackend for TorrentDownloader {
             }
         });
 
-        // 等待下载完成
-        match handle.wait_until_completed().await {
-            Ok(()) => {
+        // 等待下载完成（任务级 timeout 生效时为竞速超时）
+        let completed = match task.timeout {
+            Some(d) => tokio::select! {
+                r = handle.wait_until_completed() => Some(r),
+                _ = tokio::time::sleep(d) => None,
+            },
+            None => Some(handle.wait_until_completed().await),
+        };
+        match completed {
+            Some(Ok(())) => {
                 output.is_success = true;
                 output.status = "success".into();
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 output.is_success = false;
                 output.status = "failed".into();
                 output.error_msg = Some(e.to_string());
+            }
+            None => {
+                output.is_success = false;
+                output.status = "failed".into();
+                output.error_msg = Some("download timed out".to_string());
             }
         }
 

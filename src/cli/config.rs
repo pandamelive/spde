@@ -106,6 +106,8 @@ pub struct TaskParams {
     pub dry_run: bool,
     pub skip_tls_verify: bool,
     pub save_dir: PathBuf,
+    pub resume: bool,
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// 解析任务级参数：任务覆盖优先，未覆盖项回退 global 段默认值
@@ -120,12 +122,22 @@ pub fn resolve_task_params(overrides: &TaskOverrides, cfg: &SpdeConfig, base_dir
         .unwrap_or(cfg.global.skip_tls_verify);
     let save_path = overrides.save_path.as_deref().unwrap_or(&cfg.output.save_path);
     let save_dir = resolve_save_dir(base_dir, save_path);
+    let resume = cfg.global.resume;
+    // 超时秒数 > 0 才生效；0 视为不限时
+    let timeout_secs = overrides.timeout.unwrap_or(cfg.global.timeout);
+    let timeout = if timeout_secs > 0 {
+        Some(std::time::Duration::from_secs(timeout_secs))
+    } else {
+        None
+    };
     TaskParams {
         connections,
         retry,
         dry_run,
         skip_tls_verify,
         save_dir,
+        resume,
+        timeout,
     }
 }
 
@@ -197,6 +209,7 @@ pub fn load_config(path: &Path) -> Result<SpdeConfig, ConfigError> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn sample_cfg() -> SpdeConfig {
         // 通过完整 YAML 反序列化，验证 flatten 后的 TaskItem 兼容旧配置（不含 overrides 字段）
@@ -222,6 +235,7 @@ direct_tasks:
     skip_tls_verify: true
     dry_run: true
     save_path: "/abs/dir"
+    timeout: 7200
 "#;
         serde_yaml::from_str(yaml).expect("sample config must parse")
     }
@@ -256,6 +270,9 @@ direct_tasks:
         assert!(!p.skip_tls_verify);
         // 相对 save_path 基于 base_dir
         assert_eq!(p.save_dir, base.join("./download"));
+        // 未覆盖项回退 global 段默认值
+        assert!(p.resume);
+        assert_eq!(p.timeout, Some(Duration::from_secs(1800)));
     }
 
     #[test]
@@ -269,5 +286,31 @@ direct_tasks:
         assert!(p.skip_tls_verify);
         // 绝对 save_path 直接使用
         assert_eq!(p.save_dir, PathBuf::from("/abs/dir"));
+        // 任务级 timeout 覆盖生效
+        assert_eq!(p.timeout, Some(Duration::from_secs(7200)));
+        assert!(p.resume);
+    }
+
+    #[test]
+    fn resolve_timeout_zero_disables() {
+        // timeout=0 视为不限时
+        let yaml = r#"
+global:
+  max_concurrent: 4
+  retry_times: 3
+  timeout: 0
+  connections_per_file: 8
+  dry_run: false
+output:
+  save_path: "./download"
+direct_tasks:
+  - name: "t"
+    url: "http://example.com/x.iso"
+    filename: "x.iso"
+"#;
+        let cfg: SpdeConfig = serde_yaml::from_str(yaml).expect("sample config must parse");
+        let base = PathBuf::from("/spde-node");
+        let p = resolve_task_params(&cfg.direct_tasks[0].overrides, &cfg, &base);
+        assert_eq!(p.timeout, None);
     }
 }

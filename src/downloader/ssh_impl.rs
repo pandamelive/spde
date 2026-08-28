@@ -114,8 +114,8 @@ impl DownloadBackend for SshDownloader {
             }
         }
 
-        // 已存在且非空 → 跳过（ssh 协议无法远程获取大小，简单跳过）
-        if !task.dry_run {
+        // 已存在且非空 → 跳过（ssh 协议无法远程获取大小，简单跳过；仅在开启断点续传时）
+        if task.resume && !task.dry_run {
             if let Ok(meta) = tokio::fs::metadata(&task.save_path).await {
                 if meta.len() > 0 {
                     output.total_size = meta.len();

@@ -35,6 +35,10 @@ pub struct DownloadTask {
     pub skip_tls_verify: bool,
     /// 干跑模式（不写盘）
     pub dry_run: bool,
+    /// 断点续传（false 则从零重新下载）
+    pub resume: bool,
+    /// 单任务超时（None 为不限时）
+    pub timeout: Option<Duration>,
     /// 进度回调间隔
     pub progress_interval: Duration,
 }
@@ -53,6 +57,8 @@ impl Default for DownloadTask {
             proxy: String::new(),
             skip_tls_verify: false,
             dry_run: false,
+            resume: true,
+            timeout: None,
             progress_interval: Duration::from_millis(500),
         }
     }

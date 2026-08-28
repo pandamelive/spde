@@ -105,8 +105,8 @@ impl DownloadBackend for HttpDownloader {
         // 1. 探测文件大小和 Range 支持
         let (total_size, accept_ranges) = probe_file(&client, &task.uri, &task.headers).await?;
 
-        // 已存在且大小匹配 → 跳过
-        if !task.dry_run {
+        // 已存在且大小匹配 → 跳过（仅在开启断点续传时）
+        if task.resume && !task.dry_run {
             if let Ok(meta) = tokio::fs::metadata(&task.save_path).await {
                 if meta.len() == total_size && total_size > 0 {
                     eprintln!(
@@ -140,6 +140,8 @@ impl DownloadBackend for HttpDownloader {
                 &task.save_path,
                 &task.headers,
                 task.dry_run,
+                task.resume,
+                task.timeout,
                 total_size,
                 controller.clone(),
             )
@@ -278,12 +280,16 @@ async fn probe_file(
 // 单连接下载（fallback + 断点续传）
 // ──────────────────────────────────────────────
 
+/// 单连接下载（无 Range 或单线程场景）
+#[allow(clippy::too_many_arguments)]
 async fn download_single(
     client: &Client,
     url: &str,
     file_path: &std::path::Path,
     headers: &[(String, String)],
     dry_run: bool,
+    resume: bool,
+    timeout: Option<Duration>,
     total_size: u64,
     controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
@@ -292,7 +298,10 @@ async fn download_single(
         ..Default::default()
     };
 
-    let local_size = if dry_run {
+    let deadline = timeout.map(|d| Instant::now() + d);
+
+    // 断点续传：沿用已有本地大小（resume=false 时从零开始）
+    let local_size = if dry_run || !resume {
         0
     } else {
         tokio::fs::metadata(file_path)
@@ -319,7 +328,7 @@ async fn download_single(
     } else {
         let f = File::options()
             .create(true)
-            .truncate(false)
+            .truncate(!resume)
             .write(true)
             .read(true)
             .open(file_path)
@@ -334,6 +343,13 @@ async fn download_single(
 
     let mut stream = resp.bytes_stream();
     while let Some(chunk_res) = stream.next().await {
+        // 超时检查（循环开始时，保证后续迭代也会离开）
+        if let Some(d) = deadline {
+            if Instant::now() >= d {
+                output.error_msg = Some("download timed out".to_string());
+                break;
+            }
+        }
         // 暂停/取消检查
         if let Some(ctrl) = &controller {
             if !ctrl.wait_if_paused().await {
@@ -388,6 +404,8 @@ struct SharedState {
     start: Instant,
     /// 最后错误
     last_error: Mutex<Option<String>>,
+    /// 超时截止时间（None = 不限时）
+    deadline: Option<Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,6 +420,11 @@ async fn download_chunked(
     controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
     let part_path = std::path::PathBuf::from(format!("{}.part", task.save_path.display()));
+
+    // resume=false 时丢弃已有 .part，避免残留旧数据（分片队列始终从 0 重建）
+    if !task.resume && !task.dry_run {
+        tokio::fs::remove_file(&part_path).await.ok();
+    }
 
     // 预分配文件
     if !task.dry_run {
@@ -435,6 +458,7 @@ async fn download_chunked(
         total_size,
         start: Instant::now(),
         last_error: Mutex::new(None),
+        deadline: task.timeout.map(|d| Instant::now() + d),
     });
 
     // 启动进度报告
@@ -495,6 +519,18 @@ async fn download_chunked(
         handles.push(tokio::spawn(async move {
             st.active_conns.fetch_add(1, Ordering::Relaxed);
             loop {
+                // 超时检查
+                if let Some(d) = st.deadline {
+                    if Instant::now() >= d {
+                        let mut q = st.queue.lock();
+                        let remaining = q.len() as u32;
+                        q.clear();
+                        drop(q);
+                        st.failed_chunks.fetch_add(remaining, Ordering::Relaxed);
+                        *st.last_error.lock() = Some("download timed out".to_string());
+                        break;
+                    }
+                }
                 // 暂停/取消检查
                 if let Some(ctrl) = &ctrl_clone {
                     if !ctrl.wait_if_paused().await {
