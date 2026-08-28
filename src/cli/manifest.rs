@@ -2,8 +2,8 @@
 //! 遵循 PandaNetOS 标准，基于共享库 [`pandanetos::capability`] 生成说明书
 
 use pandanetos::capability::{
-    ApiInterface, BasicInfo, Capabilities, CapabilityManifest, Communication, ComponentRole,
-    ConfigurableParam, StatusReport,
+    ApiInterface, BasicInfo, BuildInfo, Capabilities, CapabilityManifest, Communication,
+    ComponentRole, ConfigurableParam, StatusReport,
 };
 use pandanetos::protocol::paths;
 use std::collections::BTreeMap;
@@ -18,7 +18,8 @@ pub fn build_capability_manifest() -> serde_json::Value {
         VERSION,
         "SPDE — 统一下载中心，多协议抽象层，支持 HTTP/FTP/SFTP/BT/本地文件",
         ComponentRole::DataPlane,
-    );
+    )
+    .with_mode("agent");
 
     // ── 能力清单 ──
     let mut capabilities = Capabilities {
@@ -197,6 +198,10 @@ pub fn build_capability_manifest() -> serde_json::Value {
         .with_status_report(status_report)
         .with_communication(communication);
 
+    // 构建信息：本 crate 的 build.rs 已注入统一变量，在 spde 侧读取（共享库的
+    // option_env! 在 pandanetos crate 内求值，看不到本项目注入的变量）
+    manifest.build_info = build_info_from_env();
+
     for (name, param) in configurable_params {
         manifest = manifest.with_configurable_param(&name, param);
     }
@@ -205,6 +210,69 @@ pub fn build_capability_manifest() -> serde_json::Value {
     }
 
     pandanetos::capability::build_capability_manifest(&manifest)
+}
+
+/// 从本 crate 的 build.rs 注入变量构造构建信息（标准 2.8）
+fn build_info_from_env() -> BuildInfo {
+    let build_time = option_env!("BUILD_TIME")
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| "unknown".to_string());
+    BuildInfo {
+        rust_version: option_env!("RUSTC_VERSION").unwrap_or("unknown").to_string(),
+        build_profile: option_env!("BUILD_PROFILE").unwrap_or("unknown").to_string(),
+        build_time,
+        git_commit: option_env!("GIT_COMMIT").unwrap_or("unknown").to_string(),
+        git_branch: option_env!("GIT_BRANCH").unwrap_or("unknown").to_string(),
+        target_triple: option_env!("TARGET_TRIPLE").unwrap_or("unknown").to_string(),
+    }
+}
+
+/// 节点注册时上报的能力参数（标准 4.1：注册时上报完整能力清单）
+///
+/// 与 `--manifest` 输出同一份标准清单；另外保留兼容别名（supported_protocols 等），
+/// 供旧版 PK 展示层透传使用，pk 对未知字段不做解析。
+pub fn build_node_capabilities() -> serde_json::Value {
+    let mut caps = build_capability_manifest();
+    if let Some(obj) = caps.as_object_mut() {
+        let mut protocols = vec![
+            "http".to_string(),
+            "https".to_string(),
+            "ssh".to_string(),
+            "sftp".to_string(),
+            "file".to_string(),
+        ];
+        let mut uri_formats = vec![
+            "http://".to_string(),
+            "https://".to_string(),
+            "ssh://".to_string(),
+            "sftp://".to_string(),
+            "file://".to_string(),
+        ];
+        #[cfg(feature = "ftp")]
+        {
+            protocols.push("ftp".to_string());
+            uri_formats.push("ftp://".to_string());
+        }
+        #[cfg(feature = "torrent")]
+        {
+            protocols.push("torrent".to_string());
+            protocols.push("magnet".to_string());
+            uri_formats.push("magnet:?xt=urn:btih:".to_string());
+        }
+        obj.insert("supported_protocols".to_string(), serde_json::json!(protocols));
+        obj.insert("uri_formats".to_string(), serde_json::json!(uri_formats));
+        obj.insert("run_modes".to_string(), serde_json::json!(["agent", "standalone", "cli"]));
+        obj.insert(
+            "compile_features".to_string(),
+            serde_json::json!({
+                "ftp": cfg!(feature = "ftp"),
+                "torrent": cfg!(feature = "torrent"),
+            }),
+        );
+    }
+    caps
 }
 
 /// 输出说明书到 stdout（--manifest 命令使用）

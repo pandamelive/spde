@@ -193,7 +193,7 @@ async fn register_to_pk(
             arch: arch.to_string(),
             version: VERSION.into(),
             labels: vec![],
-            capabilities: Some(build_node_capabilities()),
+            capabilities: Some(crate::cli::manifest::build_node_capabilities()),
             max_concurrent: Some(local_max_concurrent),
             max_bandwidth_bps: None,
         })
@@ -539,198 +539,10 @@ async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeC
     Ok(cfg)
 }
 
-/// 构建节点能力参数（上报给 pk，pk 不认识的字段透传）
-pub(crate) fn build_node_capabilities() -> serde_json::Value {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static CORES: AtomicUsize = AtomicUsize::new(0);
-    let cores = if CORES.load(Ordering::Relaxed) == 0 {
-        let c = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        CORES.store(c, Ordering::Relaxed);
-        c
-    } else {
-        CORES.load(Ordering::Relaxed)
-    };
-
-    // 支持的协议（根据编译 feature 动态）
-    let mut protocols = vec!["http", "https", "ssh", "sftp", "file"];
-    #[cfg(feature = "ftp")]
-    {
-        protocols.push("ftp");
-    }
-    #[cfg(feature = "torrent")]
-    {
-        protocols.push("torrent");
-        protocols.push("magnet");
-    }
-
-    // 支持的 URI 格式
-    let mut uri_formats = vec!["http://", "https://", "ssh://", "sftp://", "file://"];
-    #[cfg(feature = "ftp")]
-    {
-        uri_formats.push("ftp://");
-    }
-    #[cfg(feature = "torrent")]
-    {
-        uri_formats.push("magnet:?xt=urn:btih:");
-    }
-
-    serde_json::json!({
-        // ── 一、基本信息 ──
-        "basic": {
-            "name": "spde",
-            "version": VERSION,
-            "rust_version": rustc_version_runtime(),
-            "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
-            "description": "Super Download Engine - 多协议高性能下载引擎",
-        },
-
-        // ── 二、支持的协议 ──
-        "supported_protocols": protocols,
-        "uri_formats": uri_formats,
-
-        // ── 三、下载功能特性 ──
-        "download_features": {
-            "resume": true,                    // 断点续传
-            "multi_connection": true,          // 多连接分片下载
-            "work_stealing": true,             // 工作窃取式调度
-            "chunked_download": true,          // 分片下载
-            "retry": true,                     // 自动重试
-            "proxy": true,                     // 代理支持
-            "tls_skip_verify": true,           // 跳过 TLS 证书校验
-            "dry_run": true,                   // 干跑模式（不写盘）
-            "speed_limit": true,               // 速度限制
-            "preallocate": true,               // 文件预分配
-            "progress_callback": true,         // 进度回调
-            "realtime_progress": true,         // 实时进度上报
-            "auto_connections": true,          // 自动连接数估算
-            "custom_headers": true,            // 自定义 HTTP Headers
-        },
-
-        // ── 四、任务控制能力 ──
-        "task_control": {
-            "pause": true,                     // 暂停单个任务
-            "resume": true,                    // 恢复单个任务
-            "cancel": true,                    // 取消单个任务
-            "pause_all": true,                 // 暂停所有任务
-            "resume_all": true,                // 恢复所有任务
-            "cancel_all": true,                // 取消所有任务
-            "controller": "DownloadController", // 统一控制器（Arc<AtomicBool>）
-            "pause_check_interval_ms": 100,    // 暂停检查间隔
-        },
-
-        // ── 五、可配置参数（pk 可下发覆盖） ──
-        "configurable_params": {
-            "max_concurrent": {
-                "type": "u32",
-                "default": 4,
-                "min": 1,
-                "max": 256,
-                "description": "最大并发下载任务数",
-            },
-            "connections_per_file": {
-                "type": "u32",
-                "default": 16,
-                "min": 1,
-                "max": 128,
-                "description": "每个文件的最大并发连接数",
-            },
-            "chunk_size": {
-                "type": "u64",
-                "default": 4194304,
-                "unit": "bytes",
-                "description": "分片大小（默认 4MB）",
-            },
-            "retry_times": {
-                "type": "u32",
-                "default": 3,
-                "min": 0,
-                "max": 100,
-                "description": "下载失败重试次数",
-            },
-            "timeout_secs": {
-                "type": "u64",
-                "default": 30,
-                "description": "连接/读取超时时间（秒）",
-            },
-            "speed_limit_bps": {
-                "type": "u64",
-                "default": 0,
-                "unit": "bytes/sec",
-                "description": "速度限制（0 = 不限速）",
-            },
-            "progress_interval_ms": {
-                "type": "u64",
-                "default": 500,
-                "description": "进度上报间隔（毫秒）",
-            },
-            "save_path": {
-                "type": "string",
-                "default": "./download",
-                "description": "默认保存路径",
-            },
-            "dry_run": {
-                "type": "bool",
-                "default": false,
-                "description": "干跑模式（不写盘，只测试下载）",
-            },
-            "skip_tls_verify": {
-                "type": "bool",
-                "default": false,
-                "description": "跳过 TLS 证书校验",
-            },
-            "proxy": {
-                "type": "string",
-                "default": "",
-                "description": "代理地址（空 = 不使用代理）",
-            },
-        },
-
-        // ── 六、硬件信息 ──
-        "hardware": {
-            "cpu_cores": cores,
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "family": std::env::consts::FAMILY,
-        },
-
-        // ── 七、通信能力 ──
-        "communication": {
-            "websocket": true,                 // WebSocket 实时通信
-            "http_api": true,                  // HTTP API 通信
-            "heartbeat": true,                 // 心跳上报
-            "realtime_status": true,           // 实时状态上报
-            "task_progress_report": true,      // 单任务进度上报
-            "config_pull": true,               // 配置拉取（拉模式）
-            "task_claim": true,                // 任务领取（拉模式）
-            "heartbeat_interval_secs": 10,     // 默认心跳间隔
-            "websocket_reconnect_secs": 3,     // WebSocket 重连间隔
-        },
-
-        // ── 八、状态上报字段 ──
-        "status_report_fields": {
-            "node_level": ["active_tasks", "bytes_downloaded", "total_speed_bps", "last_error"],
-            "task_level": ["dispatch_id", "task_name", "percent", "speed_bps", "downloaded_bytes", "total_size", "active_connections", "elapsed_secs"],
-        },
-
-        // ── 九、运行模式 ──
-        "run_modes": ["agent", "standalone", "cli"],
-        "current_mode": "agent",
-
-        // ── 十、编译 feature ──
-        "compile_features": {
-            "ftp": cfg!(feature = "ftp"),
-            "torrent": cfg!(feature = "torrent"),
-            "default_features": true,
-        },
-    })
-}
-
-/// 获取 Rust 编译器版本（编译时注入）
-fn rustc_version_runtime() -> &'static str {
-    option_env!("RUSTC_VERSION").unwrap_or("unknown")
-}
+/// 构建节点能力参数（上报给 pk，标准 4.1：注册时上报完整能力清单）
+///
+/// 统一走 [`crate::cli::manifest::build_node_capabilities`]，与 `--manifest`
+/// 输出同一份标准清单（并保留旧版兼容别名），pk 对未知字段透传不解析。
 
 fn resolve_save_dir(base_dir: &Path, save_path: &str) -> PathBuf {
     let p = PathBuf::from(save_path);
@@ -747,11 +559,8 @@ struct TaskParams {
     connections: u32,
     retry: u32,
     dry_run: bool,
-    timeout: u64,
     skip_tls_verify: bool,
     save_dir: PathBuf,
-    http_proxy: String,
-    https_proxy: String,
 }
 
 fn resolve_task_params(
@@ -764,7 +573,6 @@ fn resolve_task_params(
         .unwrap_or(cfg.global.connections_per_file);
     let retry = overrides.retry_times.unwrap_or(cfg.global.retry_times);
     let dry_run = overrides.dry_run.unwrap_or(cfg.global.dry_run);
-    let timeout = overrides.timeout.unwrap_or(cfg.global.timeout);
     let skip_tls_verify = overrides
         .skip_tls_verify
         .unwrap_or(cfg.global.skip_tls_verify);
@@ -777,31 +585,9 @@ fn resolve_task_params(
         connections,
         retry,
         dry_run,
-        timeout,
         skip_tls_verify,
         save_dir,
-        http_proxy: cfg.proxy.http_proxy.clone(),
-        https_proxy: cfg.proxy.https_proxy.clone(),
     }
-}
-
-// 保留：旧版 per-task HTTP client 构建，现已统一走 DownloadManager
-#[allow(dead_code)]
-fn build_task_client(p: &TaskParams) -> Result<Client> {
-    let mut builder = Client::builder()
-        .timeout(std::time::Duration::from_secs(p.timeout))
-        .http1_only()
-        .tcp_nodelay(true);
-    if p.skip_tls_verify {
-        builder = builder.danger_accept_invalid_certs(true);
-    }
-    if !p.https_proxy.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::https(p.https_proxy.trim())?);
-    }
-    if !p.http_proxy.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::http(p.http_proxy.trim())?);
-    }
-    Ok(builder.build()?)
 }
 
 // ── 下载任务 ─────────────────────────────────────────────

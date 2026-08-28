@@ -44,5 +44,8 @@ fn main() {
     println!("cargo:rustc-env=TARGET_TRIPLE={}", target);
     println!("cargo:rustc-env=BUILD_PROFILE={}", profile);
 
-    println!("cargo:rerun-if-changed=build.rs");
+    // Git 元数据变化时重跑 build.rs，保证 GIT_COMMIT/BUILD_TIME 与当前提交绑定
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads/main");
+    println!("cargo:rerun-if-changed=.git/index");
 }
