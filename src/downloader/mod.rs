@@ -74,7 +74,7 @@ impl DownloadTask {
         }
     }
 
-    /// 有效并发数（自动模式根据文件大小估算，此处返回默认 8）
+    /// 有效并发数（0 表示自动，此处返回默认 8）
     pub fn effective_connections(&self) -> u32 {
         if self.max_conn > 0 {
             self.max_conn
@@ -378,4 +378,15 @@ pub fn build_default_manager() -> DownloadManager {
     #[cfg(feature = "torrent")]
     mgr.register_backend(TorrentDownloader::new());
     mgr
+}
+
+// ──────────────────────────────────────────────
+// 通用工具
+// ──────────────────────────────────────────────
+
+/// percent-decode URI 中的用户/密码等字段（%XX 转义还原）
+pub(crate) fn percent_decode(s: &str) -> String {
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }

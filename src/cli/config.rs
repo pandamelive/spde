@@ -112,9 +112,11 @@ pub struct TaskParams {
 
 /// 解析任务级参数：任务覆盖优先，未覆盖项回退 global 段默认值
 pub fn resolve_task_params(overrides: &TaskOverrides, cfg: &SpdeConfig, base_dir: &Path) -> TaskParams {
+    // connections=0 时强制单连接以兼容旧配置语义
     let connections = overrides
         .connections_per_file
-        .unwrap_or(cfg.global.connections_per_file);
+        .unwrap_or(cfg.global.connections_per_file)
+        .max(1);
     let retry = overrides.retry_times.unwrap_or(cfg.global.retry_times);
     let dry_run = overrides.dry_run.unwrap_or(cfg.global.dry_run);
     let skip_tls_verify = overrides
@@ -312,5 +314,29 @@ direct_tasks:
         let base = PathBuf::from("/spde-node");
         let p = resolve_task_params(&cfg.direct_tasks[0].overrides, &cfg, &base);
         assert_eq!(p.timeout, None);
+    }
+
+    #[test]
+    fn resolve_connections_zero_clamps_to_one() {
+        // connections=0（或未配置时恰好为 0）强制单连接，兼容旧配置语义
+        let yaml = r#"
+global:
+  max_concurrent: 4
+  retry_times: 3
+  timeout: 1800
+  connections_per_file: 0
+  dry_run: false
+output:
+  save_path: "./download"
+direct_tasks:
+  - name: "t0"
+    url: "http://example.com/x.iso"
+    filename: "x.iso"
+    connections_per_file: 0
+"#;
+        let cfg: SpdeConfig = serde_yaml::from_str(yaml).expect("sample config must parse");
+        let base = PathBuf::from("/spde-node");
+        let p = resolve_task_params(&cfg.direct_tasks[0].overrides, &cfg, &base);
+        assert_eq!(p.connections, 1);
     }
 }

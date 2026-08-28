@@ -73,7 +73,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         .context("create save dir failed")?;
     eprintln!("save dir: {:?}", save_dir);
 
-    let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent as usize));
+    let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent.max(1) as usize));
     let cfg_proxy = if !cfg.proxy.https_proxy.trim().is_empty() {
         cfg.proxy.https_proxy.clone()
     } else if !cfg.proxy.http_proxy.trim().is_empty() {
@@ -121,16 +121,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         let handle = tokio::spawn(async move {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
-            // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
-            let max_conn = if connections == 0 {
-                1
-            } else {
-                connections
-            };
+            // connections 已在 resolve_task_params 中钳制为 >=1
             let task = DownloadTask {
                 uri: url.clone(),
                 save_path: file_path,
-                max_conn,
+                max_conn: connections,
                 retry_times: retry,
                 dry_run,
                 skip_tls_verify,

@@ -10,6 +10,53 @@ use std::collections::BTreeMap;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// 支持的全部协议（随编译特性变化）
+fn supported_protocols() -> Vec<String> {
+    [
+        "http", "https", "ssh", "sftp", "file",
+        #[cfg(feature = "ftp")]
+        "ftp",
+        #[cfg(feature = "torrent")]
+        "torrent",
+        #[cfg(feature = "torrent")]
+        "magnet",
+    ]
+    .into_iter()
+    .map(|s: &str| s.to_string())
+    .collect()
+}
+
+/// 各协议的 URI 前缀格式（随编译特性变化）
+fn uri_formats() -> Vec<String> {
+    [
+        "http://",
+        "https://",
+        "ssh://",
+        "sftp://",
+        "file://",
+        #[cfg(feature = "ftp")]
+        "ftp://",
+        #[cfg(feature = "torrent")]
+        "magnet:?xt=urn:btih:",
+    ]
+    .into_iter()
+    .map(|s: &str| s.to_string())
+    .collect()
+}
+
+/// 编译特性列表（随编译特性变化）
+fn compile_features() -> Vec<String> {
+    [
+        #[cfg(feature = "ftp")]
+        "ftp",
+        #[cfg(feature = "torrent")]
+        "torrent",
+    ]
+    .into_iter()
+    .map(|s: &str| s.to_string())
+    .collect()
+}
+
 /// 生成 SPDE 的完整能力清单（说明书）
 pub fn build_capability_manifest() -> serde_json::Value {
     // ── 基本信息 ──
@@ -22,11 +69,8 @@ pub fn build_capability_manifest() -> serde_json::Value {
     .with_mode("agent");
 
     // ── 能力清单 ──
-    let mut capabilities = Capabilities {
-        protocols: ["http", "https", "ssh", "sftp", "file"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>(),
+    let capabilities = Capabilities {
+        protocols: supported_protocols(),
         features: BTreeMap::from([
             ("resume".to_string(), true),
             ("multi_connection".to_string(), true),
@@ -58,22 +102,8 @@ pub fn build_capability_manifest() -> serde_json::Value {
             ("arch".to_string(), serde_json::json!(std::env::consts::ARCH)),
             ("family".to_string(), serde_json::json!(std::env::consts::FAMILY)),
         ]),
-        compile_features: {
-            let mut v: Vec<String> = Vec::new();
-            #[cfg(feature = "ftp")]
-            v.push("ftp".to_string());
-            #[cfg(feature = "torrent")]
-            v.push("torrent".to_string());
-            v
-        },
+        compile_features: compile_features(),
     };
-    #[cfg(feature = "ftp")]
-    capabilities.protocols.push("ftp".to_string());
-    #[cfg(feature = "torrent")]
-    {
-        capabilities.protocols.push("torrent".to_string());
-        capabilities.protocols.push("magnet".to_string());
-    }
 
     // ── 可配置参数 ──
     let configurable_params = BTreeMap::from([
@@ -236,33 +266,9 @@ fn build_info_from_env() -> BuildInfo {
 pub fn build_node_capabilities() -> serde_json::Value {
     let mut caps = build_capability_manifest();
     if let Some(obj) = caps.as_object_mut() {
-        let mut protocols = vec![
-            "http".to_string(),
-            "https".to_string(),
-            "ssh".to_string(),
-            "sftp".to_string(),
-            "file".to_string(),
-        ];
-        let mut uri_formats = vec![
-            "http://".to_string(),
-            "https://".to_string(),
-            "ssh://".to_string(),
-            "sftp://".to_string(),
-            "file://".to_string(),
-        ];
-        #[cfg(feature = "ftp")]
-        {
-            protocols.push("ftp".to_string());
-            uri_formats.push("ftp://".to_string());
-        }
-        #[cfg(feature = "torrent")]
-        {
-            protocols.push("torrent".to_string());
-            protocols.push("magnet".to_string());
-            uri_formats.push("magnet:?xt=urn:btih:".to_string());
-        }
-        obj.insert("supported_protocols".to_string(), serde_json::json!(protocols));
-        obj.insert("uri_formats".to_string(), serde_json::json!(uri_formats));
+        // 旧版 PK 展示层透传使用的兼容别名（pk 对未知字段不做解析）
+        obj.insert("supported_protocols".to_string(), serde_json::json!(supported_protocols()));
+        obj.insert("uri_formats".to_string(), serde_json::json!(uri_formats()));
         obj.insert("run_modes".to_string(), serde_json::json!(["agent", "standalone", "cli"]));
         obj.insert(
             "compile_features".to_string(),

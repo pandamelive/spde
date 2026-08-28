@@ -33,36 +33,15 @@ impl FtpDownloader {
         let username = if parsed.username().is_empty() {
             "anonymous".to_string()
         } else {
-            simple_percent_decode(parsed.username())
+            percent_decode(parsed.username())
         };
         let password = parsed
             .password()
-            .map(simple_percent_decode)
+            .map(percent_decode)
             .unwrap_or_else(|| "anonymous@".to_string());
         let path = parsed.path().to_string();
         Ok((format!("{}:{}", host, port), username, password, path))
     }
-}
-
-/// 简单的 percent-decoding（处理 %XX）
-fn simple_percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
 
 #[async_trait::async_trait]

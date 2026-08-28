@@ -36,33 +36,15 @@ struct ClaimResp {
     name: String,
     url: String,
     filename: String,
-    overrides: ClaimOverrides,
-}
-
-/// 任务级覆盖字段（claim 响应中平铺下发，与 config.yaml 的 TaskItem 覆盖字段一致）
-///
-/// 结构上直接复用共享 [`TaskOverrides`]。
-#[derive(Debug, Deserialize, Clone, Default)]
-struct ClaimOverrides {
+    // 任务级覆盖字段（claim 响应中平铺下发，与 config.yaml 的 TaskItem 覆盖字段一致）
     #[serde(flatten)]
-    inner: TaskOverrides,
+    #[serde(default)]
+    overrides: TaskOverrides,
 }
 
 // ── 实时进度共享状态 ─────────────────────────────────────
-#[derive(Clone)]
-#[allow(dead_code)]
-struct TaskProgressState {
-    dispatch_id: Uuid,
-    task_name: String,
-    total_size: u64,
-    downloaded_bytes: u64,
-    speed_bps: u64,
-    percent: f64,
-    active_connections: u32,
-    elapsed_secs: f64,
-}
-
-type ProgressMap = Arc<Mutex<HashMap<Uuid, TaskProgressState>>>;
+/// dispatch_id → 实时速度（供 status_loop 汇总总速度）
+type ProgressMap = Arc<Mutex<HashMap<Uuid, u64>>>;
 
 /// WebSocket 进度回调：更新共享状态 + 推送进度消息给 PK
 struct WsProgress {
@@ -74,22 +56,12 @@ struct WsProgress {
 
 impl ProgressCallback for WsProgress {
     fn on_progress(&self, s: ProgressSnapshot) {
-        let state = TaskProgressState {
-            dispatch_id: self.dispatch_id,
-            task_name: self.task_name.clone(),
-            total_size: s.total_size,
-            downloaded_bytes: s.downloaded_bytes,
-            speed_bps: s.speed_bps,
-            percent: s.percent,
-            active_connections: s.active_connections,
-            elapsed_secs: s.elapsed_secs,
-        };
-
         // 更新共享状态（供 status_loop 汇总总速度）
         let map = self.progress_map.clone();
         let dispatch_id = self.dispatch_id;
+        let speed_bps = s.speed_bps;
         tokio::spawn(async move {
-            map.lock().await.insert(dispatch_id, state);
+            map.lock().await.insert(dispatch_id, speed_bps);
         });
 
         // 推送单任务进度给 PK
@@ -307,7 +279,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                 // 汇总所有活跃任务的总速度
                 let total_speed: u64 = {
                     let map = progress_map.lock().await;
-                    map.values().map(|s| s.speed_bps).sum()
+                    map.values().sum()
                 };
                 let err = last_error.lock().await.clone();
                 ws.send_status(
@@ -549,7 +521,7 @@ fn spawn_download_task(
     let name = task.name.clone();
     let url = task.url.clone();
     let filename = task.filename.clone();
-    let params = resolve_task_params(&task.overrides.inner, &cfg, &base_dir);
+    let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
 
     let controller = Arc::new(DownloadController::new());
     let ctrl_clone = controller.clone();
@@ -570,16 +542,11 @@ fn spawn_download_task(
         log!("[download] start {} -> {:?}", name, file_path);
         let started = Instant::now();
 
-        // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
-        let max_conn = if params.connections == 0 {
-            1
-        } else {
-            params.connections
-        };
+        // connections 已在 resolve_task_params 中钳制为 >=1
         let task = DownloadTask {
             uri: url.clone(),
             save_path: file_path,
-            max_conn,
+            max_conn: params.connections,
             retry_times: params.retry,
             dry_run: params.dry_run,
             skip_tls_verify: params.skip_tls_verify,

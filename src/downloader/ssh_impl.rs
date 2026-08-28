@@ -41,7 +41,7 @@ impl SshDownloader {
         let user = if parsed.username().is_empty() {
             whoami_username()
         } else {
-            simple_percent_decode(parsed.username())
+            percent_decode(parsed.username())
         };
         let path = parsed.path().to_string();
         if path.is_empty() || path == "/" {
@@ -56,27 +56,6 @@ fn whoami_username() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "user".to_string())
-}
-
-/// 简单 percent-decode
-fn simple_percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
 
 #[async_trait::async_trait]
