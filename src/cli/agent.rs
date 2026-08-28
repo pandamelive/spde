@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -20,7 +20,7 @@ use crate::downloader::{
     build_default_manager, DownloadController, DownloadOutput, DownloadTask, ProgressCallback,
     ProgressSnapshot,
 };
-use pandanetos::protocol::paths;
+use pandanetos::protocol::{paths, RegisterReq, RegisterResp};
 use pandanetos::response::ApiResponse;
 
 macro_rules! log {
@@ -35,32 +35,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCAN_PORTS: &[u16] = &[5566, 8080, 80, 8000, 3000];
 
 // ── API 类型 ─────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct RegisterReq {
-    node_id: Option<Uuid>,
-    hostname: String,
-    platform: String,
-    arch: String,
-    version: String,
-    labels: Vec<String>,
-    /// 节点能力参数（JSON，灵活扩展，pk 不认识的字段透传）
-    capabilities: Option<serde_json::Value>,
-    /// 节点上报的最大并发任务数
-    max_concurrent: Option<u32>,
-    /// 节点上报的最大带宽上限 bps
-    max_bandwidth_bps: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct RegisterResp {
-    node_id: Uuid,
-    poll_interval_secs: u64,
-    /// 节点注册后的状态（online/pending）
-    #[serde(default)]
-    status: Option<String>,
-}
+// 注册请求/响应直接使用共享库 [`pandanetos::protocol::{RegisterReq, RegisterResp}`]
 
 /// 从 PK 领取到的任务详情
 #[derive(Debug, Deserialize, Clone)]
@@ -554,7 +529,11 @@ async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<
 // ── 拉取全局 config ──────────────────────────────────────
 
 async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeConfig> {
-    let url = format!("{master}/api/v1/nodes/{node_id}/config.yaml");
+    // 共享路径常量：/api/v1/nodes/{id}/config.yaml，替换 {id} 为实际节点 ID
+    let url = format!(
+        "{master}{}",
+        paths::NODE_CONFIG_YAML.replace("{id}", &node_id.to_string())
+    );
     let text = api
         .get(&url)
         .send()

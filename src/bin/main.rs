@@ -292,10 +292,116 @@ async fn main() -> Result<()> {
             spde::cli::agent::run_agent(&paths, master, token).await?;
         }
         SubCommand::Config => {
-            eprintln!("config subcommand done");
+            // 共享库提供统一配置加载（env > file > 默认）；此处仅校验并展示本地 config.yaml
+            match load_config(&paths.config_file) {
+                Ok(cfg) => {
+                    eprintln!(
+                        "config ok: max_concurrent={}, connections={}, timeout={}s, save_path={}",
+                        cfg.global.max_concurrent,
+                        cfg.global.connections_per_file,
+                        cfg.global.timeout,
+                        cfg.output.save_path
+                    );
+                    eprintln!("controller.url={}", cfg.controller.url);
+                    eprintln!("direct_tasks={}", cfg.direct_tasks.len());
+                }
+                Err(e) => {
+                    anyhow::bail!("config invalid: {:#}", e);
+                }
+            }
         }
         SubCommand::Stats => {
-            eprintln!("stats subcommand done");
+            print_stats(&paths).await?;
+        }
+    }
+    Ok(())
+}
+
+/// 汇总 run-history.jsonl 统计（与 serve 汇总输出保持一致）
+async fn print_stats(paths: &SpdePaths) -> Result<()> {
+    eprintln!("== 统计信息 ==");
+    eprintln!("history file: {:?}", paths.run_history_file);
+
+    let content = match tokio::fs::read_to_string(&paths.run_history_file).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("(empty: 尚无下载历史)");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut record_count = 0usize;
+    let mut success_count = 0u32;
+    let mut fail_count = 0u32;
+    let mut total_bytes: u64 = 0;
+    let mut total_elapsed: f64 = 0.0;
+    let mut max_speed_mbps: f64 = 0.0;
+
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        record_count += 1;
+        let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        if status == "failed" {
+            fail_count += 1;
+        } else {
+            success_count += 1;
+        }
+        if let Some(b) = v.get("downloaded_bytes").and_then(|x| x.as_u64()) {
+            total_bytes += b;
+        }
+        if let Some(e) = v.get("elapsed_secs").and_then(|x| x.as_f64()) {
+            total_elapsed += e;
+        }
+        if let Some(s) = v.get("avg_speed_mbps").and_then(|x| x.as_f64()) {
+            if s > max_speed_mbps {
+                max_speed_mbps = s;
+            }
+        }
+    }
+
+    if record_count == 0 {
+        eprintln!("(empty: 尚无下载历史)");
+        return Ok(());
+    }
+
+    let avg_speed_mbps = if total_elapsed > 0.0 {
+        total_bytes as f64 / 1024.0 / 1024.0 / total_elapsed
+    } else {
+        0.0
+    };
+    let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
+
+    eprintln!(
+        "总记录数: {} (成功: {} 失败: {})",
+        record_count, success_count, fail_count
+    );
+    eprintln!("累计下载量: {:.1} MB ({:.2} GB)", total_mb, total_mb / 1024.0);
+    eprintln!(
+        "累计耗时: {:.1} s, 平均速度: {:.1} MB/s, 峰值速度: {:.1} MB/s",
+        total_elapsed, avg_speed_mbps, max_speed_mbps
+    );
+
+    eprintln!("\n最近 {} 条记录:", record_count.min(10));
+    for line in content.lines().rev().take(10) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let ts = v.get("timestamp").and_then(|x| x.as_str()).unwrap_or("-");
+            let name = v.get("task_name").and_then(|x| x.as_str()).unwrap_or("-");
+            let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("-");
+            let mb = v
+                .get("downloaded_bytes")
+                .and_then(|x| x.as_u64())
+                .map(|b| b as f64 / 1024.0 / 1024.0)
+                .unwrap_or(0.0);
+            eprintln!("  {}  {}  {}  {:.1} MB", ts, status, name, mb);
         }
     }
     Ok(())

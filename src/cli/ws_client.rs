@@ -18,53 +18,11 @@ macro_rules! log {
     }};
 }
 
-use pandanetos::protocol::ServerMsg;
+use pandanetos::protocol::paths;
+use pandanetos::protocol::{ClientMsg, ServerMsg};
 
-// ── 消息协议（与 PK 端 ws.rs 对应） ──────────────────────
-
-/// 借用实现对应标准库 [`pandanetos::protocol::ClientMsg`]，序列化字节与标准定义一致
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMsg<'a> {
-    Pong,
-    Status {
-        active_tasks: u32,
-        bytes_downloaded: u64,
-        busy: bool,
-        total_speed_bps: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        last_error: Option<&'a str>,
-    },
-    TaskStarted {
-        dispatch_id: Uuid,
-    },
-    TaskProgress {
-        dispatch_id: Uuid,
-        task_name: &'a str,
-        percent: f64,
-        downloaded_bytes: u64,
-        total_size: u64,
-        speed_bps: u64,
-        active_connections: u32,
-        elapsed_secs: f64,
-    },
-    TaskReport {
-        dispatch_id: Option<Uuid>,
-        task_id: Option<Uuid>,
-        task_name: &'a str,
-        url: &'a str,
-        filename: &'a str,
-        file_size: u64,
-        downloaded_bytes: u64,
-        elapsed_secs: f64,
-        avg_speed_mbps: f64,
-        status: &'a str,
-        success_chunks: u64,
-        failed_chunks: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error_msg: Option<&'a str>,
-    },
-}
+// ── 消息协议 ────────────────────────────────────────────
+// 直接使用共享库 [`pandanetos::protocol::ClientMsg`]，序列化格式与 PK 端权威定义一致
 
 // ── 任务报告参数 ─────────────────────────────────────────
 
@@ -195,7 +153,7 @@ impl WsClient {
             bytes_downloaded,
             busy,
             total_speed_bps,
-            last_error,
+            last_error: last_error.map(|s| s.to_string()),
         };
         self.send_json(&msg).await;
     }
@@ -208,7 +166,7 @@ impl WsClient {
     pub async fn send_task_progress(&self, p: TaskProgressParams<'_>) {
         let msg = ClientMsg::TaskProgress {
             dispatch_id: p.dispatch_id,
-            task_name: p.task_name,
+            task_name: p.task_name.to_string(),
             percent: p.percent,
             downloaded_bytes: p.downloaded_bytes,
             total_size: p.total_size,
@@ -223,17 +181,17 @@ impl WsClient {
         let msg = ClientMsg::TaskReport {
             dispatch_id: p.dispatch_id,
             task_id: p.task_id,
-            task_name: p.task_name,
-            url: p.url,
-            filename: p.filename,
+            task_name: p.task_name.to_string(),
+            url: p.url.to_string(),
+            filename: p.filename.to_string(),
             file_size: p.file_size,
             downloaded_bytes: p.downloaded_bytes,
             elapsed_secs: p.elapsed_secs,
             avg_speed_mbps: p.avg_speed_mbps,
-            status: p.status,
+            status: p.status.to_string(),
             success_chunks: p.success_chunks,
             failed_chunks: p.failed_chunks,
-            error_msg: p.error_msg,
+            error_msg: p.error_msg.map(|s| s.to_string()),
         };
         self.send_json(&msg).await;
     }
@@ -261,7 +219,7 @@ async fn connection_loop(
     deleted_notify: Arc<Notify>,
 ) {
     let ws_base = ws_base(&master);
-    let ws_url = format!("{}/api/v1/agent/ws?node_id={}", ws_base, node_id);
+    let ws_url = format!("{}{}?node_id={}", ws_base, paths::AGENT_WS, node_id);
 
     loop {
         match connect_ws(&ws_url, &token).await {
