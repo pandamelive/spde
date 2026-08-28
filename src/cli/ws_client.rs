@@ -61,7 +61,7 @@ pub struct WsClient {
 
 impl WsClient {
     /// 启动 WebSocket 客户端（后台自动重连）
-    pub fn spawn(node_id: Uuid, master: String, token: String, base_dir: PathBuf) -> Self {
+    pub fn spawn(node_id: Uuid, master: String, base_dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<String>(128);
         let config_notify = Arc::new(Notify::new());
         let task_notify = Arc::new(Notify::new());
@@ -72,7 +72,6 @@ impl WsClient {
         tokio::spawn(connection_loop(
             node_id,
             master,
-            token,
             rx,
             config_notify.clone(),
             task_notify.clone(),
@@ -200,7 +199,6 @@ impl WsClient {
 async fn connection_loop(
     node_id: Uuid,
     master: String,
-    token: String,
     mut rx: mpsc::Receiver<String>,
     config_notify: Arc<Notify>,
     task_notify: Arc<Notify>,
@@ -213,7 +211,7 @@ async fn connection_loop(
     let ws_url = format!("{}{}?node_id={}", ws_base, paths::AGENT_WS, node_id);
 
     loop {
-        match connect_ws(&ws_url, &token).await {
+        match connect_ws(&ws_url).await {
             Ok(ws_stream) => {
                 connected.store(true, Ordering::SeqCst);
                 log!("[ws] connected to {}", ws_url);
@@ -297,10 +295,7 @@ async fn connection_loop(
     }
 }
 
-async fn connect_ws(
-    ws_url: &str,
-    _token: &str,
-) -> Result<
+async fn connect_ws(ws_url: &str) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     // 直接传 URL，tungstenite 自动构建完整握手请求（含 Sec-WebSocket-Key）

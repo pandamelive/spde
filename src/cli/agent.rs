@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::cli::config::SpdeConfig;
+use crate::cli::config::{resolve_task_params, SpdeConfig, TaskOverrides};
 use crate::cli::discover;
 use crate::cli::history::get_or_create_node_id;
 use crate::cli::paths::SpdePaths;
@@ -39,23 +39,13 @@ struct ClaimResp {
     overrides: ClaimOverrides,
 }
 
+/// 任务级覆盖字段（claim 响应中平铺下发，与 config.yaml 的 TaskItem 覆盖字段一致）
+///
+/// 结构上直接复用共享 [`TaskOverrides`]。
 #[derive(Debug, Deserialize, Clone, Default)]
-#[allow(dead_code)]
 struct ClaimOverrides {
-    #[serde(default)]
-    max_concurrent: Option<u32>,
-    #[serde(default)]
-    connections_per_file: Option<u32>,
-    #[serde(default)]
-    retry_times: Option<u32>,
-    #[serde(default)]
-    timeout: Option<u64>,
-    #[serde(default)]
-    skip_tls_verify: Option<bool>,
-    #[serde(default)]
-    dry_run: Option<bool>,
-    #[serde(default)]
-    save_path: Option<String>,
+    #[serde(flatten)]
+    inner: TaskOverrides,
 }
 
 // ── 实时进度共享状态 ─────────────────────────────────────
@@ -261,12 +251,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     }
 
     // 5. 启动 WebSocket 客户端
-    let ws = WsClient::spawn(
-        node_id,
-        master.clone(),
-        token.clone(),
-        paths.base_dir.clone(),
-    );
+    let ws = WsClient::spawn(node_id, master.clone(), paths.base_dir.clone());
 
     // 6. 拉取全局配置（max_concurrent / dry_run / save_path 等）
     let global_cfg = match fetch_config(&api, &master, node_id).await {
@@ -544,52 +529,6 @@ async fn fetch_config(api: &Client, master: &str, node_id: Uuid) -> Result<SpdeC
 /// 统一走 [`crate::cli::manifest::build_node_capabilities`]，与 `--manifest`
 /// 输出同一份标准清单（并保留旧版兼容别名），pk 对未知字段透传不解析。
 
-fn resolve_save_dir(base_dir: &Path, save_path: &str) -> PathBuf {
-    let p = PathBuf::from(save_path);
-    if p.is_absolute() {
-        p
-    } else {
-        base_dir.join(p)
-    }
-}
-
-// ── 任务级参数解析 ──────────────────────────────────────
-
-struct TaskParams {
-    connections: u32,
-    retry: u32,
-    dry_run: bool,
-    skip_tls_verify: bool,
-    save_dir: PathBuf,
-}
-
-fn resolve_task_params(
-    overrides: &ClaimOverrides,
-    cfg: &SpdeConfig,
-    base_dir: &Path,
-) -> TaskParams {
-    let connections = overrides
-        .connections_per_file
-        .unwrap_or(cfg.global.connections_per_file);
-    let retry = overrides.retry_times.unwrap_or(cfg.global.retry_times);
-    let dry_run = overrides.dry_run.unwrap_or(cfg.global.dry_run);
-    let skip_tls_verify = overrides
-        .skip_tls_verify
-        .unwrap_or(cfg.global.skip_tls_verify);
-    let save_path = overrides
-        .save_path
-        .as_deref()
-        .unwrap_or(&cfg.output.save_path);
-    let save_dir = resolve_save_dir(base_dir, save_path);
-    TaskParams {
-        connections,
-        retry,
-        dry_run,
-        skip_tls_verify,
-        save_dir,
-    }
-}
-
 // ── 下载任务 ─────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -610,7 +549,7 @@ fn spawn_download_task(
     let name = task.name.clone();
     let url = task.url.clone();
     let filename = task.filename.clone();
-    let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
+    let params = resolve_task_params(&task.overrides.inner, &cfg, &base_dir);
 
     let controller = Arc::new(DownloadController::new());
     let ctrl_clone = controller.clone();

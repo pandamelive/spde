@@ -7,7 +7,7 @@ use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 
-use spde::cli::config::{load_config, SpdeConfig};
+use spde::cli::config::{load_config, resolve_task_params, SpdeConfig};
 use spde::cli::paths::SpdePaths;
 use spde::{build_default_manager, DownloadTask, ProgressCallback, StderrProgress};
 
@@ -74,10 +74,6 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     eprintln!("save dir: {:?}", save_dir);
 
     let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent as usize));
-    let cfg_connections = cfg.global.connections_per_file;
-    let cfg_retry = cfg.global.retry_times;
-    let cfg_dry_run = cfg.global.dry_run;
-    let cfg_skip_tls = cfg.global.skip_tls_verify;
     let cfg_proxy = if !cfg.proxy.https_proxy.trim().is_empty() {
         cfg.proxy.https_proxy.clone()
     } else if !cfg.proxy.http_proxy.trim().is_empty() {
@@ -109,29 +105,35 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             .await
             .context("acquire semaphore failed")?;
 
-        let mgr = mgr.clone();
-        let url = task_cfg.url.clone();
+        // 任务级覆盖（config.yaml direct_tasks 内联字段），未覆盖项回退 global 段默认值
+        let params = resolve_task_params(&task_cfg.overrides, &cfg, &paths.base_dir);
         let name = task_cfg.name.clone();
+        let url = task_cfg.url.clone();
         let filename = task_cfg.filename.clone();
-        let file_path = save_dir.join(&task_cfg.filename);
+        let file_path = params.save_dir.join(&task_cfg.filename);
+        let connections = params.connections;
+        let retry = params.retry;
+        let dry_run = params.dry_run;
+        let skip_tls_verify = params.skip_tls_verify;
         let proxy = cfg_proxy.clone();
+        let mgr = mgr.clone();
 
         let handle = tokio::spawn(async move {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
             // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
-            let max_conn = if cfg_connections == 0 {
+            let max_conn = if connections == 0 {
                 1
             } else {
-                cfg_connections
+                connections
             };
             let task = DownloadTask {
                 uri: url.clone(),
                 save_path: file_path,
                 max_conn,
-                retry_times: cfg_retry,
-                dry_run: cfg_dry_run,
-                skip_tls_verify: cfg_skip_tls,
+                retry_times: retry,
+                dry_run,
+                skip_tls_verify,
                 proxy,
                 ..Default::default()
             };
@@ -291,7 +293,7 @@ async fn main() -> Result<()> {
             spde::cli::agent::run_agent(&paths, master, token).await?;
         }
         SubCommand::Config => {
-            // 共享库提供统一配置加载（env > file > 默认）；此处仅校验并展示本地 config.yaml
+            // 仅校验并展示本地 config.yaml（此处为 CLI 展示用途，沿用本地加载）
             match load_config(&paths.config_file) {
                 Ok(cfg) => {
                     eprintln!(
