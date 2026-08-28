@@ -29,9 +29,7 @@ impl TorrentDownloader {
 
     /// 判断 URI 是否为 BT 相关
     fn is_torrent_uri(uri: &str) -> bool {
-        uri.starts_with("magnet:")
-            || uri.ends_with(".torrent")
-            || uri.starts_with("torrent://")
+        uri.starts_with("magnet:") || uri.ends_with(".torrent") || uri.starts_with("torrent://")
     }
 
     /// 从 URI 构建 AddTorrent
@@ -42,7 +40,7 @@ impl TorrentDownloader {
 
         // 本地 .torrent 文件
         let path = std::path::Path::new(uri);
-        if path.exists() && path.extension().map_or(false, |e| e == "torrent") {
+        if path.exists() && path.extension().is_some_and(|e| e == "torrent") {
             let bytes = tokio::fs::read(path)
                 .await
                 .context("read .torrent file failed")?;

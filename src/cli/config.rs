@@ -78,21 +78,12 @@ impl Default for OutputConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ProxyConfig {
     #[serde(default)]
     pub http_proxy: String,
     #[serde(default)]
     pub https_proxy: String,
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            http_proxy: String::new(),
-            https_proxy: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

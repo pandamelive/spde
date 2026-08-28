@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,11 +16,16 @@ use crate::cli::discover;
 use crate::cli::history::get_or_create_node_id;
 use crate::cli::paths::SpdePaths;
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
-use crate::downloader::{build_default_manager, DownloadController, DownloadOutput, DownloadTask, ProgressCallback, ProgressSnapshot};
+use crate::downloader::{
+    build_default_manager, DownloadController, DownloadOutput, DownloadTask, ProgressCallback,
+    ProgressSnapshot,
+};
+use pandanetos::protocol::paths;
+use pandanetos::response::ApiResponse;
 
 macro_rules! log {
     ($($arg:tt)*) => {{
-        let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let ts = Utc::now().to_rfc3339().to_string();
         std::eprint!("[{}] ", ts);
         std::eprintln!($($arg)*);
     }};
@@ -57,11 +62,6 @@ struct RegisterResp {
     status: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiResp<T> {
-    data: T,
-}
-
 /// 从 PK 领取到的任务详情
 #[derive(Debug, Deserialize, Clone)]
 struct ClaimResp {
@@ -94,6 +94,7 @@ struct ClaimOverrides {
 
 // ── 实时进度共享状态 ─────────────────────────────────────
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TaskProgressState {
     dispatch_id: Uuid,
     task_name: String,
@@ -217,8 +218,8 @@ async fn register_to_pk(
     arch: &str,
     local_max_concurrent: u32,
 ) -> Result<RegisterResp> {
-    let reg: ApiResp<RegisterResp> = api
-        .post(format!("{master}/api/v1/agent/register"))
+    let reg: ApiResponse<RegisterResp> = api
+        .post(format!("{master}{}", paths::AGENT_REGISTER))
         .json(&RegisterReq {
             node_id: Some(node_id),
             hostname: hostname.to_string(),
@@ -272,7 +273,16 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 4. register 到 PK（先从本地配置读取 max_concurrent 上报，注册后 pk 下发的值会覆盖）
     let local_max_concurrent = local_cfg.global.max_concurrent.max(1);
     let api = api_client(&token)?;
-    let reg = register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await?;
+    let reg = register_to_pk(
+        &api,
+        &master,
+        node_id,
+        &hostname,
+        &platform,
+        &arch,
+        local_max_concurrent,
+    )
+    .await?;
 
     let node_id = reg.node_id;
     if let Some(status) = &reg.status {
@@ -285,14 +295,21 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     }
 
     // 5. 启动 WebSocket 客户端
-    let ws = WsClient::spawn(node_id, master.clone(), token.clone(), paths.base_dir.clone());
+    let ws = WsClient::spawn(
+        node_id,
+        master.clone(),
+        token.clone(),
+        paths.base_dir.clone(),
+    );
 
     // 6. 拉取全局配置（max_concurrent / dry_run / save_path 等）
     let global_cfg = match fetch_config(&api, &master, node_id).await {
         Ok(cfg) => {
             log!(
                 "[agent] global config: max_concurrent={}, dry_run={}, save_path={}",
-                cfg.global.max_concurrent, cfg.global.dry_run, cfg.output.save_path
+                cfg.global.max_concurrent,
+                cfg.global.dry_run,
+                cfg.output.save_path
             );
             cfg
         }
@@ -308,7 +325,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     let bytes_total = Arc::new(AtomicU64::new(0));
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let progress_map: ProgressMap = Arc::new(Mutex::new(HashMap::new()));
-    let running: Arc<Mutex<HashMap<Uuid, (JoinHandle<()>, Arc<DownloadController>)>>> = Arc::new(Mutex::new(HashMap::new()));
+    type RunningTasks = HashMap<Uuid, (JoinHandle<()>, Arc<DownloadController>)>;
+    let running: Arc<Mutex<RunningTasks>> = Arc::new(Mutex::new(HashMap::new()));
 
     // 全局并发信号量
     let max_concurrent = {
@@ -363,7 +381,17 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                match register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await {
+                match register_to_pk(
+                    &api,
+                    &master,
+                    node_id,
+                    &hostname,
+                    &platform,
+                    &arch,
+                    local_max_concurrent,
+                )
+                .await
+                {
                     Ok(reg) => {
                         if let Some(status) = &reg.status {
                             if status == "pending" {
@@ -384,12 +412,25 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     }
 
     // 9. 主循环：先占并发槽 → claim 领取 → 执行 → 完成后释放槽
-    log!("[agent] entering claim loop (max_concurrent={})", max_concurrent);
+    log!(
+        "[agent] entering claim loop (max_concurrent={})",
+        max_concurrent
+    );
     loop {
         // 检查节点是否被 pk 删除，如果被删除则立即暂停任务并重新注册
         if ws.is_node_deleted() {
             log!("[agent] node deleted by pk, pausing all tasks and re-registering...");
-            match register_to_pk(&api, &master, node_id, &hostname, &platform, &arch, local_max_concurrent).await {
+            match register_to_pk(
+                &api,
+                &master,
+                node_id,
+                &hostname,
+                &platform,
+                &arch,
+                local_max_concurrent,
+            )
+            .await
+            {
                 Ok(reg) => {
                     if let Some(status) = &reg.status {
                         if status == "online" {
@@ -422,7 +463,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
             Ok(Some(task)) => {
                 log!(
                     "[agent] claimed task: {} (dispatch_id={})",
-                    task.name, task.dispatch_id
+                    task.name,
+                    task.dispatch_id
                 );
                 let cfg = global_cfg.lock().await.clone();
                 let handle = spawn_download_task(
@@ -438,7 +480,10 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     task_done_tx.clone(),
                 );
                 let dispatch_id = handle.0;
-                running.lock().await.insert(dispatch_id, (handle.1, handle.2));
+                running
+                    .lock()
+                    .await
+                    .insert(dispatch_id, (handle.1, handle.2));
             }
             Ok(None) => {
                 // 池子空，释放 permit 后等待通知
@@ -476,7 +521,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     for (dispatch_id, (handle, controller)) in run.drain() {
         log!("[agent] aborting task dispatch_id={}", dispatch_id);
         controller.cancel(); // 先通知下载器取消
-        handle.abort();      // 再强制终止任务
+        handle.abort(); // 再强制终止任务
     }
 
     Ok(())
@@ -485,7 +530,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
 // ── 领取任务 ─────────────────────────────────────────────
 
 async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<ClaimResp>> {
-    let url = format!("{master}/api/v1/agent/claim");
+    let url = format!("{master}{}", paths::DISPATCH_CLAIM);
     let resp = api
         .post(&url)
         .json(&serde_json::json!({ "node_id": node_id }))
@@ -497,7 +542,7 @@ async fn claim_task(api: &Client, master: &str, node_id: Uuid) -> Result<Option<
         return Ok(None);
     }
 
-    let task: ApiResp<ClaimResp> = resp
+    let task: ApiResponse<ClaimResp> = resp
         .error_for_status()
         .context("claim rejected")?
         .json()
@@ -529,7 +574,9 @@ pub(crate) fn build_node_capabilities() -> serde_json::Value {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CORES: AtomicUsize = AtomicUsize::new(0);
     let cores = if CORES.load(Ordering::Relaxed) == 0 {
-        let c = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let c = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         CORES.store(c, Ordering::Relaxed);
         c
     } else {
@@ -715,7 +762,7 @@ fn rustc_version_runtime() -> &'static str {
     option_env!("RUSTC_VERSION").unwrap_or("unknown")
 }
 
-fn resolve_save_dir(base_dir: &PathBuf, save_path: &str) -> PathBuf {
+fn resolve_save_dir(base_dir: &Path, save_path: &str) -> PathBuf {
     let p = PathBuf::from(save_path);
     if p.is_absolute() {
         p
@@ -740,7 +787,7 @@ struct TaskParams {
 fn resolve_task_params(
     overrides: &ClaimOverrides,
     cfg: &SpdeConfig,
-    base_dir: &PathBuf,
+    base_dir: &Path,
 ) -> TaskParams {
     let connections = overrides
         .connections_per_file
@@ -748,7 +795,9 @@ fn resolve_task_params(
     let retry = overrides.retry_times.unwrap_or(cfg.global.retry_times);
     let dry_run = overrides.dry_run.unwrap_or(cfg.global.dry_run);
     let timeout = overrides.timeout.unwrap_or(cfg.global.timeout);
-    let skip_tls_verify = overrides.skip_tls_verify.unwrap_or(cfg.global.skip_tls_verify);
+    let skip_tls_verify = overrides
+        .skip_tls_verify
+        .unwrap_or(cfg.global.skip_tls_verify);
     let save_path = overrides
         .save_path
         .as_deref()
@@ -811,7 +860,7 @@ fn spawn_download_task(
     let ctrl_clone = controller.clone();
     let handle = tokio::spawn(async move {
         let _controller = ctrl_clone; // 移动到任务中，任务结束后自动 drop
-        // permit 已在主循环中获取，这里直接持有直到任务结束
+                                      // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
         // 统一调度器：所有协议自动路由
@@ -827,7 +876,11 @@ fn spawn_download_task(
         let started = Instant::now();
 
         // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
-        let max_conn = if params.connections == 0 { 1 } else { params.connections };
+        let max_conn = if params.connections == 0 {
+            1
+        } else {
+            params.connections
+        };
         let task = DownloadTask {
             uri: url.clone(),
             save_path: file_path,
@@ -847,35 +900,37 @@ fn spawn_download_task(
         }));
 
         let controller = Arc::new(DownloadController::new());
-        let result = mgr.dispatch(task, progress_cb, Some(controller.clone())).await;
+        let result = mgr
+            .dispatch(task, progress_cb, Some(controller.clone()))
+            .await;
 
-        let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) =
-            match result {
-                Ok(o) => {
-                    // 任务成功时清除 last_error
-                    if o.is_success {
-                        *last_error.lock().await = None;
-                    }
-                    (
-                        o.status,
-                        o.total_size,
-                        o.downloaded_bytes,
-                        o.elapsed_secs,
-                        o.success_chunks as u64,
-                        o.failed_chunks as u64,
-                        o.error_msg,
-                    )
-                },
-                Err(e) => (
-                    "failed".into(),
-                    0,
-                    0,
-                    started.elapsed().as_secs_f64(),
-                    0,
-                    0,
-                    Some(e.to_string()),
-                ),
-            };
+        let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) = match result
+        {
+            Ok(o) => {
+                // 任务成功时清除 last_error
+                if o.is_success {
+                    *last_error.lock().await = None;
+                }
+                (
+                    o.status,
+                    o.total_size,
+                    o.downloaded_bytes,
+                    o.elapsed_secs,
+                    o.success_chunks as u64,
+                    o.failed_chunks as u64,
+                    o.error_msg,
+                )
+            }
+            Err(e) => (
+                "failed".into(),
+                0,
+                0,
+                started.elapsed().as_secs_f64(),
+                0,
+                0,
+                Some(e.to_string()),
+            ),
+        };
 
         bytes_total.fetch_add(downloaded, Ordering::Relaxed);
         if let Some(ref e) = err_msg {

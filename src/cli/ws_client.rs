@@ -1,7 +1,7 @@
 use anyhow::Result;
-use chrono::Local;
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,14 +12,17 @@ use uuid::Uuid;
 
 macro_rules! log {
     ($($arg:tt)*) => {{
-        let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let ts = Utc::now().to_rfc3339().to_string();
         std::eprint!("[{}] ", ts);
         std::eprintln!($($arg)*);
     }};
 }
 
+use pandanetos::protocol::ServerMsg;
+
 // ── 消息协议（与 PK 端 ws.rs 对应） ──────────────────────
 
+/// 借用实现对应标准库 [`pandanetos::protocol::ClientMsg`]，序列化字节与标准定义一致
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg<'a> {
@@ -60,21 +63,6 @@ enum ClientMsg<'a> {
         failed_chunks: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         error_msg: Option<&'a str>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMsg {
-    ConfigChanged,
-    NewTask,
-    Ping,
-    /// 节点已被 pk 删除，应立即暂停任务并重新注册
-    NodeDeleted,
-    DeleteFile {
-        filename: String,
-        #[serde(default)]
-        save_path: Option<String>,
     },
 }
 
@@ -259,6 +247,7 @@ impl WsClient {
 
 // ── 连接循环 ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn connection_loop(
     node_id: Uuid,
     master: String,
@@ -359,7 +348,12 @@ async fn connection_loop(
     }
 }
 
-async fn connect_ws(ws_url: &str, _token: &str) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+async fn connect_ws(
+    ws_url: &str,
+    _token: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
     // 直接传 URL，tungstenite 自动构建完整握手请求（含 Sec-WebSocket-Key）
     // PK 端 WebSocket 不验证 token，仅通过 node_id query param 识别节点
     let (ws_stream, _resp) = connect_async(ws_url).await?;

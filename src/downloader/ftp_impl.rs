@@ -87,9 +87,9 @@ impl DownloadBackend for FtpDownloader {
                 anyhow::bail!("download cancelled by controller");
             }
         }
+        use futures_lite::io::AsyncReadExt as _;
         use suppaftp::types::FileType;
         use suppaftp::AsyncFtpStream;
-        use futures_lite::io::AsyncReadExt as _;
 
         let start = Instant::now();
         let (addr, user, pass, remote_path) = Self::parse_ftp_uri(&task.uri)?;
@@ -99,19 +99,13 @@ impl DownloadBackend for FtpDownloader {
         let mut ftp = AsyncFtpStream::connect(&addr)
             .await
             .with_context(|| format!("connect ftp {} failed", addr))?;
-        ftp.login(&user, &pass)
-            .await
-            .context("ftp login failed")?;
+        ftp.login(&user, &pass).await.context("ftp login failed")?;
         ftp.transfer_type(FileType::Binary)
             .await
             .context("set binary mode failed")?;
 
         // 获取文件大小
-        let total_size = ftp
-            .size(&remote_path)
-            .await
-            .map(|s| s as u64)
-            .unwrap_or(0);
+        let total_size = ftp.size(&remote_path).await.map(|s| s as u64).unwrap_or(0);
         output.total_size = total_size;
 
         // 已存在且大小匹配 → 跳过
@@ -157,6 +151,7 @@ impl DownloadBackend for FtpDownloader {
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .read(true)
             .open(&task.save_path)
@@ -234,7 +229,12 @@ impl DownloadBackend for FtpDownloader {
         ftp.quit().await.ok();
 
         output.is_success = output.downloaded_bytes + local_size >= total_size || total_size == 0;
-        output.status = if output.is_success { "success" } else { "incomplete" }.into();
+        output.status = if output.is_success {
+            "success"
+        } else {
+            "incomplete"
+        }
+        .into();
         output.elapsed_secs = start.elapsed().as_secs_f64();
         output.avg_speed_mbps = if output.elapsed_secs > 0.0 {
             output.downloaded_bytes as f64 / output.elapsed_secs / 1024.0 / 1024.0

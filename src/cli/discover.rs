@@ -36,10 +36,9 @@ pub async fn discover_pk(scan_ports: &[u16]) -> Option<String> {
                     )
                     .await
                     .is_ok()
+                        && verify_pk(&target, port).await
                     {
-                        if verify_pk(&target, port).await {
-                            return Some(format!("http://{}:{}", target, port));
-                        }
+                        return Some(format!("http://{}:{}", target, port));
                     }
                     None
                 }));

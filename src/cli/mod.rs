@@ -1,8 +1,8 @@
-pub mod paths;
-pub mod config;
-pub mod history;
-pub mod signal;
 pub mod agent;
+pub mod config;
 pub mod discover;
-pub mod ws_client;
+pub mod history;
 pub mod manifest;
+pub mod paths;
+pub mod signal;
+pub mod ws_client;

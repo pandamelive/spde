@@ -64,8 +64,7 @@ pub async fn download_file(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let progress: Option<Arc<dyn ProgressCallback>> =
-        Some(Arc::new(StderrProgress::new(name)));
+    let progress: Option<Arc<dyn ProgressCallback>> = Some(Arc::new(StderrProgress::new(name)));
 
     let task = DownloadTask {
         uri: url.to_string(),

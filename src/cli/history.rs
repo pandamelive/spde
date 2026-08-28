@@ -38,7 +38,6 @@ pub fn append_event(file_path: &Path, event: &SpdeEvent) -> Result<(), HistoryEr
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
-        .write(true)
         .open(file_path)?;
     let line = serde_json::to_string(event)?;
     writeln!(f, "{}", line)?;

@@ -13,8 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 SPDE/0.6";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 SPDE/0.6";
 
 /// HTTP(S) 下载器
 pub struct HttpDownloader {
@@ -115,10 +114,12 @@ impl DownloadBackend for HttpDownloader {
                         name,
                         total_size as f64 / 1024.0 / 1024.0
                     );
-                    let mut o = DownloadOutput::default();
-                    o.total_size = total_size;
-                    o.status = "skipped".into();
-                    o.is_success = true;
+                    let o = DownloadOutput {
+                        total_size,
+                        status: "skipped".into(),
+                        is_success: true,
+                        ..Default::default()
+                    };
                     if let Some(p) = &progress {
                         p.on_complete(o.clone());
                     }
@@ -166,7 +167,12 @@ impl DownloadBackend for HttpDownloader {
             0.0
         };
         if output.status.is_empty() {
-            output.status = if output.is_success { "success" } else { "failed" }.into();
+            output.status = if output.is_success {
+                "success"
+            } else {
+                "failed"
+            }
+            .into();
         }
 
         if let Some(p) = &progress {
@@ -206,7 +212,7 @@ async fn probe_file(
                     .get("content-range")
                     .and_then(|v| {
                         v.to_str().ok().and_then(|s| {
-                            s.split('/').last().and_then(|t| t.parse::<u64>().ok())
+                            s.split('/').next_back().and_then(|t| t.parse::<u64>().ok())
                         })
                     })
                     .or_else(|| resp.content_length())
@@ -214,7 +220,11 @@ async fn probe_file(
                 if total > 0 {
                     return Ok((total, accept));
                 }
-                errors.push(format!("GET attempt {}: total=0 status={}", attempt, resp.status()));
+                errors.push(format!(
+                    "GET attempt {}: total=0 status={}",
+                    attempt,
+                    resp.status()
+                ));
             }
             Err(e) => errors.push(format!("GET attempt {}: {}", attempt, e)),
         }
@@ -241,9 +251,17 @@ async fn probe_file(
                     if total > 0 {
                         return Ok((total, accept));
                     }
-                    errors.push(format!("HEAD attempt {}: total=0 status={}", attempt, resp.status()));
+                    errors.push(format!(
+                        "HEAD attempt {}: total=0 status={}",
+                        attempt,
+                        resp.status()
+                    ));
                 } else {
-                    errors.push(format!("HEAD attempt {}: status={}", attempt, resp.status()));
+                    errors.push(format!(
+                        "HEAD attempt {}: status={}",
+                        attempt,
+                        resp.status()
+                    ));
                 }
             }
             Err(e) => errors.push(format!("HEAD attempt {}: {}", attempt, e)),
@@ -269,8 +287,10 @@ async fn download_single(
     total_size: u64,
     controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
-    let mut output = DownloadOutput::default();
-    output.total_size = total_size;
+    let mut output = DownloadOutput {
+        total_size,
+        ..Default::default()
+    };
 
     let local_size = if dry_run {
         0
@@ -299,6 +319,7 @@ async fn download_single(
     } else {
         let f = File::options()
             .create(true)
+            .truncate(false)
             .write(true)
             .read(true)
             .open(file_path)
@@ -369,6 +390,7 @@ struct SharedState {
     last_error: Mutex<Option<String>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_chunked(
     client: &Client,
     task: &DownloadTask,
@@ -385,6 +407,7 @@ async fn download_chunked(
     if !task.dry_run {
         let f = File::options()
             .create(true)
+            .truncate(false)
             .write(true)
             .read(true)
             .open(&part_path)
@@ -491,7 +514,14 @@ async fn download_chunked(
                 let mut ok = false;
                 for attempt in 0..retry {
                     match download_range(
-                        &c, &url, &headers, &part, start, end, st.clone(), dry_run,
+                        &c,
+                        &url,
+                        &headers,
+                        &part,
+                        start,
+                        end,
+                        st.clone(),
+                        dry_run,
                         speed_limit,
                     )
                     .await
@@ -539,16 +569,18 @@ async fn download_chunked(
     let downloaded = state.downloaded.load(Ordering::Relaxed);
     let last_error = state.last_error.lock().clone();
 
-    let mut output = DownloadOutput::default();
-    output.total_size = total_size;
-    output.downloaded_bytes = if failed == 0 { total_size } else { downloaded };
-    output.success_chunks = success;
-    output.failed_chunks = failed;
-    output.is_success = failed == 0;
-    output.error_msg = if failed > 0 {
-        last_error.or(Some("some chunks failed".into()))
-    } else {
-        None
+    let output = DownloadOutput {
+        total_size,
+        downloaded_bytes: if failed == 0 { total_size } else { downloaded },
+        success_chunks: success,
+        failed_chunks: failed,
+        is_success: failed == 0,
+        error_msg: if failed > 0 {
+            last_error.or(Some("some chunks failed".into()))
+        } else {
+            None
+        },
+        ..Default::default()
     };
 
     // 全部成功 → rename
@@ -562,6 +594,7 @@ async fn download_chunked(
 }
 
 /// 下载单个分片到文件指定偏移
+#[allow(clippy::too_many_arguments)]
 async fn download_range(
     client: &Client,
     url: &str,
@@ -599,7 +632,9 @@ async fn download_range(
     };
 
     if let Some(file) = file_opt.as_mut() {
-        file.seek(SeekFrom::Start(start)).await.context("seek failed")?;
+        file.seek(SeekFrom::Start(start))
+            .await
+            .context("seek failed")?;
     }
 
     let mut stream = resp.bytes_stream();

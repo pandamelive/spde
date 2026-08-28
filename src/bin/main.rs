@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
@@ -121,7 +121,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
             // 构建统一任务：connections=0 时强制单连接以兼容旧配置语义
-            let max_conn = if cfg_connections == 0 { 1 } else { cfg_connections };
+            let max_conn = if cfg_connections == 0 {
+                1
+            } else {
+                cfg_connections
+            };
             let task = DownloadTask {
                 uri: url.clone(),
                 save_path: file_path,
@@ -166,7 +170,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     for h in handles {
         if let Ok((name, url, filename, result)) = h.await {
-            let timestamp = Local::now().to_rfc3339();
+            let timestamp = Utc::now().to_rfc3339();
             let record = match result {
                 Ok(o) => {
                     total_bytes += o.downloaded_bytes;
@@ -224,20 +228,41 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             .write_all(content.as_bytes())
             .await
             .context("write run-history.jsonl failed")?;
-        eprintln!("[history] {} records appended to {:?}", history_lines.len(), history_file);
+        eprintln!(
+            "[history] {} records appended to {:?}",
+            history_lines.len(),
+            history_file
+        );
     }
 
     let elapsed = overall_start.elapsed().as_secs_f64();
     let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
-    let avg_speed = if elapsed > 0.0 { total_mb / elapsed } else { 0.0 };
+    let avg_speed = if elapsed > 0.0 {
+        total_mb / elapsed
+    } else {
+        0.0
+    };
 
-    eprintln!("");
+    eprintln!();
     eprintln!("========== 下载汇总 ==========");
-    eprintln!("总任务数: {} (成功: {} 失败: {})", enabled.len(), success_count, fail_count);
-    eprintln!("本次下载量: {:.1} MB ({:.2} GB)", total_mb, total_mb / 1024.0);
+    eprintln!(
+        "总任务数: {} (成功: {} 失败: {})",
+        enabled.len(),
+        success_count,
+        fail_count
+    );
+    eprintln!(
+        "本次下载量: {:.1} MB ({:.2} GB)",
+        total_mb,
+        total_mb / 1024.0
+    );
     let grand_total = historical_total + total_bytes;
     let grand_total_mb = grand_total as f64 / 1024.0 / 1024.0;
-    eprintln!("历史总下载量: {:.1} MB ({:.2} GB)", grand_total_mb, grand_total_mb / 1024.0);
+    eprintln!(
+        "历史总下载量: {:.1} MB ({:.2} GB)",
+        grand_total_mb,
+        grand_total_mb / 1024.0
+    );
     eprintln!("总耗时: {:.1}s", elapsed);
     eprintln!("平均速度: {:.1} MB/s", avg_speed);
     eprintln!("==============================");
@@ -250,12 +275,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = SpdePaths::from_exe_side()?;
     eprintln!("spde work root: {:?}", paths.base_dir);
-    paths
-        .check_and_prepare()
-        .context("初始化目录文件失败")?;
-    paths
-        .verify_integrity()
-        .context("目录文件完整性校验失败")?;
+    paths.check_and_prepare().context("初始化目录文件失败")?;
+    paths.verify_integrity().context("目录文件完整性校验失败")?;
 
     match cli.cmd {
         SubCommand::Manifest => {

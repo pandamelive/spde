@@ -341,8 +341,8 @@ impl DownloadManager {
 // 内置后端导出
 // ──────────────────────────────────────────────
 
-pub mod http_impl;
 pub mod file_impl;
+pub mod http_impl;
 pub mod ssh_impl;
 
 #[cfg(feature = "ftp")]
@@ -351,8 +351,8 @@ pub mod ftp_impl;
 #[cfg(feature = "torrent")]
 pub mod torrent_impl;
 
-pub use http_impl::HttpDownloader;
 pub use file_impl::FileDownloader;
+pub use http_impl::HttpDownloader;
 pub use ssh_impl::SshDownloader;
 
 #[cfg(feature = "ftp")]

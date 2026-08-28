@@ -147,10 +147,14 @@ impl DownloadBackend for SshDownloader {
 
         let mut cmd = Command::new("scp");
         cmd.args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-P", &port_str,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-P",
+            &port_str,
             &target,
         ]);
         cmd.arg(&task.save_path);
@@ -170,7 +174,9 @@ impl DownloadBackend for SshDownloader {
         cmd.stderr(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::null());
 
-        let mut child = cmd.spawn().context("failed to spawn scp (is openssh-client installed?)")?;
+        let mut child = cmd
+            .spawn()
+            .context("failed to spawn scp (is openssh-client installed?)")?;
 
         // 读取 stderr 解析进度
         if let Some(mut stderr) = child.stderr.take() {
@@ -181,11 +187,13 @@ impl DownloadBackend for SshDownloader {
                 let mut buf = vec![0u8; 1024];
                 let mut line_buf = String::new();
                 while let Ok(n) = stderr.read(&mut buf).await {
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     line_buf.push_str(&String::from_utf8_lossy(&buf[..n]));
                     while let Some(pos) = line_buf.find('\n') {
                         let line = line_buf[..pos].trim().to_string();
-                        line_buf = line_buf[pos+1..].to_string();
+                        line_buf = line_buf[pos + 1..].to_string();
                         // scp 进度格式: "file  100%  123MB  5.0MB/s 00:01"
                         if let Some(percent) = parse_scp_progress(&line) {
                             if let Some(cb) = &prog_cb {

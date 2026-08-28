@@ -106,9 +106,7 @@ impl DownloadBackend for FileDownloader {
         }
 
         // 流式复制（带进度回调）
-        let mut src_file = fs::File::open(&src)
-            .await
-            .context("open source failed")?;
+        let mut src_file = fs::File::open(&src).await.context("open source failed")?;
         let mut dst_file = fs::File::create(dst)
             .await
             .context("create destination failed")?;
@@ -165,7 +163,12 @@ impl DownloadBackend for FileDownloader {
         output.downloaded_bytes = copied;
         output.success_chunks = 1;
         output.is_success = copied == total_size;
-        output.status = if output.is_success { "success" } else { "incomplete" }.into();
+        output.status = if output.is_success {
+            "success"
+        } else {
+            "incomplete"
+        }
+        .into();
         output.elapsed_secs = start.elapsed().as_secs_f64();
         output.avg_speed_mbps = if output.elapsed_secs > 0.0 {
             copied as f64 / output.elapsed_secs / 1024.0 / 1024.0

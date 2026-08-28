@@ -103,7 +103,10 @@ direct_tasks: []
 
         if !self.run_history_file.exists() {
             fs::write(&self.run_history_file, b"")?;
-            eprintln!("[init] create history log file: {:?}", self.run_history_file);
+            eprintln!(
+                "[init] create history log file: {:?}",
+                self.run_history_file
+            );
         }
         Ok(())
     }
@@ -122,7 +125,10 @@ direct_tasks: []
 
         for (path, desc) in checks.iter() {
             if !path.exists() {
-                return Err(PathError::IntegrityMissing(format!("{} -> {:?}", desc, path)));
+                return Err(PathError::IntegrityMissing(format!(
+                    "{} -> {:?}",
+                    desc, path
+                )));
             }
         }
         eprintln!("[init] all directory & file integrity passed");

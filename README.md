@@ -2,6 +2,13 @@
 
 PandaNetPL 生态统一下载中心，单点 CLI 实现。支持本地独立运行与 PK 主控集中调度两种模式。
 
+## 生态标准
+
+本项目属于 **PandaNetOS 生态项目群**，遵循全系统权威标准仓库 [PandaNetOS](https://github.com/pandamelive/PandaNetOS) 的规范：
+
+- **强制依赖** `pandanetos` 共享库（path 依赖），统一协议路径常量（`protocol::paths`）、响应格式（`ApiResponse`/`ApiError`）、错误码、时间格式（UTC RFC3339）与配置标准，禁止维护私有协议与常量。
+- **标准一致性**：节点上报、任务领取、心跳等协议路径均与 PandaNetOS《标准规范》一致，不得出现与标准不一致的私有端点。
+
 > 当前版本：v0.3.0
 > 支持平台：Windows x86_64 / Linux x86_64 musl / Linux aarch64 musl / macOS x86_64 / macOS aarch64
 
