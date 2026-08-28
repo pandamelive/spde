@@ -5,10 +5,8 @@
 //! - `DownloadManager` 统一调度，自动按 URI 路由到对应后端
 
 pub mod cli;
-pub mod core;
 pub mod downloader;
 
-pub use core::{EventMeta, SpdeEvent};
 pub use downloader::{
     build_default_manager, DownloadBackend, DownloadManager, DownloadOutput, DownloadTask,
     FileDownloader, HttpDownloader, ProgressCallback, ProgressSnapshot, SshDownloader,

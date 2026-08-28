@@ -175,7 +175,7 @@ pub fn build_capability_manifest() -> serde_json::Value {
         .map(|s| s.to_string())
         .collect(),
         task_level: [
-            "dispatch_id", "task_name", "percent", "speed_bps", "downloaded_bytes", "total_bytes",
+            "dispatch_id", "task_name", "percent", "speed_bps", "downloaded_bytes", "total_size",
             "active_connections", "status", "error_message",
         ]
         .iter()
@@ -188,7 +188,7 @@ pub fn build_capability_manifest() -> serde_json::Value {
         websocket: true,
         http_api: true,
         heartbeat: true,
-        heartbeat_interval_secs: 10,
+        heartbeat_interval_secs: 5,
         websocket_reconnect_secs: 3,
     };
 

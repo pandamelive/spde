@@ -296,7 +296,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         let bytes_total = bytes_total.clone();
         let last_error = last_error.clone();
         let progress_map = progress_map.clone();
-        // 状态上报间隔：复用 agent.heartbeat_interval_secs，默认10秒
+        // 状态上报间隔：复用 agent.heartbeat_interval_secs，默认5秒
         let report_interval = {
             let cfg = global_cfg.lock().await;
             cfg.agent.heartbeat_interval_secs.max(1)
