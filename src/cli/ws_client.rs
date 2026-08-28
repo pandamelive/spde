@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -9,14 +8,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
-
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let ts = Utc::now().to_rfc3339().to_string();
-        std::eprint!("[{}] ", ts);
-        std::eprintln!($($arg)*);
-    }};
-}
 
 use pandanetos::protocol::paths;
 use pandanetos::protocol::{ClientMsg, ServerMsg};

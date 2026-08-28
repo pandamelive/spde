@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -22,14 +21,6 @@ use crate::downloader::{
 };
 use pandanetos::protocol::{paths, RegisterReq, RegisterResp};
 use pandanetos::response::ApiResponse;
-
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let ts = Utc::now().to_rfc3339().to_string();
-        std::eprint!("[{}] ", ts);
-        std::eprintln!($($arg)*);
-    }};
-}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCAN_PORTS: &[u16] = &[5566, 8080, 80, 8000, 3000];
@@ -838,8 +829,8 @@ fn spawn_download_task(
     let controller = Arc::new(DownloadController::new());
     let ctrl_clone = controller.clone();
     let handle = tokio::spawn(async move {
-        let _controller = ctrl_clone; // 移动到任务中，任务结束后自动 drop
-                                      // permit 已在主循环中获取，这里直接持有直到任务结束
+        // ctrl_clone 即主循环持有的同一控制器：外部 cancel/pause 会立刻作用于下载器
+        // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
         // 统一调度器：所有协议自动路由
@@ -870,7 +861,7 @@ fn spawn_download_task(
             ..Default::default()
         };
 
-        // 构建 WS 进度回调：实时推送单任务进度 + 汇总到共享状态
+        // WS 进度回调：实时推送单任务进度 + 汇总到共享状态
         let progress_cb: Option<Arc<dyn ProgressCallback>> = Some(Arc::new(WsProgress {
             ws: ws.clone(),
             dispatch_id,
@@ -878,9 +869,9 @@ fn spawn_download_task(
             progress_map: progress_map.clone(),
         }));
 
-        let controller = Arc::new(DownloadController::new());
+        // 直接使用外部传入的同一控制器：外部 cancel 立即生效（替换原先内部重复创建的无用控制器）
         let result = mgr
-            .dispatch(task, progress_cb, Some(controller.clone()))
+            .dispatch(task, progress_cb, Some(ctrl_clone))
             .await;
 
         let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) = match result

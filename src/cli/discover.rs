@@ -1,4 +1,5 @@
 use anyhow::Result;
+use pandanetos::protocol::paths;
 use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,9 +58,9 @@ pub async fn discover_pk(scan_ports: &[u16]) -> Option<String> {
     None
 }
 
-/// 验证目标地址是否为 PK 服务端（GET /api/v1/overview 返回合法 JSON）
+/// 验证目标地址是否为 PK 服务端（GET `paths::OVERVIEW` 返回合法 JSON）
 async fn verify_pk(ip: &Ipv4Addr, port: u16) -> bool {
-    let url = format!("http://{}:{}/api/v1/overview", ip, port);
+    let url = format!("http://{}:{}{}", ip, port, paths::OVERVIEW);
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()

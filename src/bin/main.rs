@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
@@ -170,7 +169,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     for h in handles {
         if let Ok((name, url, filename, result)) = h.await {
-            let timestamp = Utc::now().to_rfc3339();
+            let timestamp = pandanetos::time::now_rfc3339();
             let record = match result {
                 Ok(o) => {
                     total_bytes += o.downloaded_bytes;

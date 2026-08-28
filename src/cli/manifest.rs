@@ -5,6 +5,7 @@ use pandanetos::capability::{
     ApiInterface, BasicInfo, Capabilities, CapabilityManifest, Communication, ComponentRole,
     ConfigurableParam, StatusReport,
 };
+use pandanetos::protocol::paths;
 use std::collections::BTreeMap;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -137,11 +138,11 @@ pub fn build_capability_manifest() -> serde_json::Value {
     let api_interfaces = BTreeMap::from([
         (
             "overview".to_string(),
-            ApiInterface::new("GET", "/api/v1/overview", "探测 PK 是否在线"),
+            ApiInterface::new("GET", paths::OVERVIEW, "探测 PK 是否在线"),
         ),
         (
             "agent_register".to_string(),
-            ApiInterface::new("POST", "/api/v1/agent/register", "向 PK 注册为节点")
+            ApiInterface::new("POST", paths::AGENT_REGISTER, "向 PK 注册为节点")
                 .with_request_field("node_id", "uuid")
                 .with_request_field("hostname", "string")
                 .with_request_field("platform", "string")
@@ -151,15 +152,15 @@ pub fn build_capability_manifest() -> serde_json::Value {
         ),
         (
             "dispatch_claim".to_string(),
-            ApiInterface::new("POST", "/api/v1/dispatches/claim", "领取待下发任务"),
+            ApiInterface::new("POST", paths::DISPATCH_CLAIM, "领取待下发任务"),
         ),
         (
             "fetch_config".to_string(),
-            ApiInterface::new("GET", "/api/v1/nodes/{id}/config.yaml", "拉取节点配置"),
+            ApiInterface::new("GET", paths::NODE_CONFIG_YAML, "拉取节点配置"),
         ),
         (
             "agent_ws".to_string(),
-            ApiInterface::new("GET", "/api/v1/agent/ws", "WebSocket 实时状态通道"),
+            ApiInterface::new("GET", paths::AGENT_WS, "WebSocket 实时状态通道"),
         ),
     ]);
 
