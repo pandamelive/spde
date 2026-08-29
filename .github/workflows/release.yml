@@ -42,7 +42,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PandaNetOS/PandaNetOS
-          path: ../PandaNetOS
+          path: PandaNetOS
+
+      - name: Move PandaNetOS to parent directory
+        shell: bash
+        run: mv PandaNetOS ../PandaNetOS
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
