@@ -1,142 +1,158 @@
-# SPDE (Super-Download-Engine)
+# SPDE — Super Download Engine
 
-PandaNetPL 生态统一下载中心，单点 CLI 实现。支持本地独立运行与 PK 主控集中调度两种模式。
+> **PandaNetOS 生态统一下载中心**：单点下载引擎，本地独立运行与 PK 主控集中调度双模式。
 
-## 生态标准
+SPDE（Super Download Engine）是 **PandaNetOS 生态**的核心下载组件。单二进制、零外部依赖，跨平台提供高性能多协议下载能力——既可独立部署执行本地批量下载，也可作为 Agent 节点接入 PK 主控，参与全网统一调度。
 
-本项目属于 **PandaNetOS 生态项目群**，遵循全系统权威标准仓库 [PandaNetOS](https://github.com/pandamelive/PandaNetOS) 的规范：
+---
 
-- **强制依赖** `pandanetos` 共享库（path 依赖），统一协议路径常量（`protocol::paths`）、响应格式（`ApiResponse`/`ApiError`）、错误码、时间格式（UTC RFC3339）与配置标准，禁止维护私有协议与常量。
-- **标准一致性**：节点上报、任务领取、心跳等协议路径均与 PandaNetOS《标准规范》一致，不得出现与标准不一致的私有端点。
+## 生态定位
 
-> 当前版本：v0.7.1
-> 支持平台：Windows x86_64 / Linux x86_64 musl / Linux aarch64 musl / macOS x86_64 / macOS aarch64
+本项目隶属 **PandaNetOS 生态项目群**，以生态权威标准库 [PandaNetOS](https://github.com/PandaNetOS/PandaNetOS) 为准绳：
 
-## 特性
+| 规范维度 | 要求 |
+|---|---|
+| 共享库依赖 | 强制 path 依赖 `pandanetos`，**禁止**维护私有协议与私有常量 |
+| 协议路径 | 全部复用共享库 `protocol::paths` 路径常量 |
+| 响应格式 | 统一 `ApiResponse` / `ApiError`、生态错误码、UTC RFC3339 时间格式 |
+| 配置标准 | 遵循 PandaNetOS 配置规范，与生态各组件对齐 |
+| 标准一致性 | 节点注册、任务领取、心跳、状态上报端点与《PandaNetOS 标准规范》严格一致 |
 
-- 单二进制，复制即可运行，无外部依赖
-- 启动自动目录自检，缺失目录/配置自动生成最小模板
-- `node-id`：节点永久唯一标识
-- **单文件多连接分片下载**：可配置连接数，跑满带宽
-- **分片失败自动重试**：可配置重试次数，失败正确标记 error
-- **断点续传**：支持从已下载位置继续
-- **实时进度显示**：百分比、已下载/总大小、当前速度
-- **下载汇总统计**：本次下载量、历史总下载量、总耗时、平均速度
-- **run-history.jsonl 永久持久化**：每次下载任务流量信息追加写入，只追加不修改
-- **dry-run 模式**：数据直接丢弃不落盘，仅统计速度和流量（适合测速）
-- 支持 HTTP/HTTPS 代理
-- 支持跳过 TLS 证书验证
-- SIGINT/SIGTERM 捕获，优雅退出
-- GitHub Actions 自动多平台编译 + Tag 触发自动 Release
+### 构建信息注入（能力清单标准 3.1）
+
+编译期自动注入统一构建信息，随 Capability Manifest 输出：
+
+`BUILD_TIME` `GIT_COMMIT` `GIT_BRANCH` `RUSTC_VERSION` `TARGET_TRIPLE` `BUILD_PROFILE`
+
+---
+
+## 版本与平台
+
+| 项 | 值 |
+|---|---|
+| 当前版本 | **v1.1.1** |
+| 发布通道 | GitHub Actions Tag（`v*`）自动构建 Release |
+| 平台矩阵 | Windows x86_64 · Linux x86_64 musl · Linux aarch64 musl · macOS x86_64 · macOS aarch64 |
+
+---
+
+## 核心特性
+
+### 下载引擎
+- **多连接分片下载**：单文件多连接并发，连接数可配，充分跑满带宽
+- **分片级失败重试**：失败 chunk 自动重试，次数可配，最终状态精确标记
+- **断点续传**：从已下载位置继续，节省时间与流量
+- **多协议后端**：HTTP / HTTPS / SSH / SFTP / 本地文件；可编译特性扩充 FTP、Torrent / Magnet
+- **细粒度控制**：连接数、分片大小、速度上限、单任务超时——全局与任务级双层配置
+- **代理与 TLS**：HTTP(S) 代理支持；跳过 TLS 证书校验（自签名环境）
 
 ### Agent 模式（PK 主控集中调度）
+- **自动节点注册**：上报 hostname / 平台 / 架构 / 版本，获取永久 `node_id`
+- **局域网自动发现**：未指定主控时扫描 5566 / 8080 / 80 / 8000 / 3000 端口
+- **WebSocket 实时通道**：长连接接收指令，断线 3 秒自动重连
+- **动态任务同步**：`config_changed` 触发增量拉取，任务增删即时生效
+- **状态心跳**：每 10 秒上报活跃任务数、累计流量、忙碌状态、最近错误
+- **任务级回报**：开始 / 完成 / 失败全程回传（dispatch_id、分片状态、平均速度、错误详情）
+- **鉴权体系**：HTTP API 携带 Bearer Token；WebSocket 按 `node_id` 识别节点
 
-- **`spde agent` 子命令**：接入 PandaNetPL Controller（PK），由主控统一下发下载任务
-- **节点自动注册**：启动时向 PK 注册节点信息（hostname、平台、架构、版本），获取永久 node_id
-- **局域网自动发现**：未指定 master 时自动扫描局域网（端口 5566/8080/80/8000/3000）寻找 PK 服务端
-- **WebSocket 实时通信**：长连接接收任务变更通知，自动重连（断线 3 秒重试）
-- **动态任务同步**：PK 推送配置变更后自动拉取最新任务列表，增量启动/取消下载任务
-- **实时状态上报**：每 10 秒通过 WebSocket 上报活跃任务数、累计下载量、忙碌状态、最近错误
-- **任务级回报**：每个任务开始/完成时通过 WebSocket 回传详细统计（dispatch_id、task_id、速度、分片状态等）
-- **Token 鉴权**：HTTP API（注册/领任务/拉配置）携带 Bearer Token；WebSocket 按 `node_id` query 参数识别节点（PK 端不校验 token）
+### 运行保障
+- **启动自检**：目录与配置完整性自动校验，缺失自动生成最小模板
+- **节点永久标识**：`data/node-id.json`
+- **流水持久化**：`data/run-history.jsonl` 只追加、不修改
+- **优雅退出**：SIGINT / SIGTERM 捕获
+- **dry-run 测速**：数据不落盘，仅统计速度与流量
+
+---
 
 ## 快速开始
 
-### 模式一：本地独立运行（serve）
+### 模式一：本地独立运行
 
 ```bash
-# 直接运行（首次启动自动生成 spde-node/ 目录和配置模板）
+# 首次启动自动生成 spde-node/ 目录与配置模板
 ./spde serve
 
-# 编辑配置
+# 按需编辑配置
 vim spde-node/config/config.yaml
 
-# 再次运行开始下载
+# 重新运行
 ./spde serve
 ```
 
-### 模式二：接入 PK 主控（agent）
+### 模式二：接入 PK 主控
 
 ```bash
-# 指定 PK 地址和 token 启动
+# 指定主控地址与 Token
 ./spde agent --master http://10.0.0.8:5566 --token your_token
 
-# 也可在 config.yaml 的 controller 段预配置，启动时无需参数
+# 或预先配置 controller 段，直接启动
 ./spde agent
 
-# 不指定 master 时自动扫描局域网寻找 PK
+# 未指定 master 时自动扫描局域网
 ./spde agent
 ```
+
+---
 
 ## 目录结构
 
-工作目录固定在二进制同级目录下的 `spde-node/`（避免与二进制文件名 `spde` 冲突）：
+工作目录固定于二进制同级目录 `spde-node/`：
 
 ```
 spde-node/
-├── bin/                          # 二进制目录
+├── bin/                   # 二进制目录
 ├── config/
-│   └── config.yaml               # 主配置文件
+│   └── config.yaml        # 主配置文件
 └── data/
-    ├── node-id.json              # 节点永久唯一标识
-    └── run-history.jsonl         # 下载历史永久记录（追加写入）
+    ├── node-id.json       # 节点永久唯一标识
+    └── run-history.jsonl  # 下载历史流水（追加写入）
 ```
 
-## 配置项说明（config.yaml）
+---
+
+## 配置体系
 
 ### agent — Agent 模式配置
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `master` | string | `""` | PK 主控地址（如 `http://10.0.0.8:5566`），也可通过 `--master` 命令行参数覆盖 |
-| `node_id` | string/null | `null` | 节点 UUID，留空时使用本地 `node-id.json` 中的标识 |
+| `master` | string | `""` | PK 主控地址；可用 `--master` 覆盖 |
+| `node_id` | string/null | `null` | 节点 UUID；留空使用本地 `node-id.json` |
 | `heartbeat_interval_secs` | int | `5` | 心跳间隔（秒） |
 
 ### global — 全局配置
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `work_dir` | string/null | `null` | 数据目录路径，相对路径基于 `spde-node/` 根目录；为 null 时使用 `spde-node/data/` |
+| `work_dir` | string/null | `null` | 数据目录；相对 `spde-node/`，null 用 `spde-node/data/` |
 | `max_concurrent` | int | `4` | 最大并发下载任务数 |
-| `resume` | bool | `true` | 是否启用断点续传 |
-| `retry_times` | int | `3` | 单个分片下载失败后的重试次数 |
-| `timeout` | int | `1800` | 单个下载任务超时时间（秒） |
-| `skip_tls_verify` | bool | `false` | 是否跳过 TLS 证书验证（自签名证书环境可开启） |
-| `connections_per_file` | int | `8` | 单文件多连接分片下载的连接数（越大越快，受服务器和带宽限制） |
-| `dry_run` | bool | `false` | 试运行模式：下载数据直接丢弃不落盘，仅统计速度和流量（适合测速） |
+| `resume` | bool | `true` | 断点续传开关 |
+| `retry_times` | int | `3` | 分片失败重试次数 |
+| `timeout` | int | `1800` | 单任务超时（秒） |
+| `skip_tls_verify` | bool | `false` | 跳过 TLS 证书校验 |
+| `connections_per_file` | int | `8` | 单文件多连接数（越大越快，受服务端与带宽限制） |
+| `dry_run` | bool | `false` | 试运行：不落盘，仅统计速度与流量 |
 
-### output — 输出配置
+### output / proxy / controller
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `save_path` | string | `"./download"` | 下载文件保存目录，相对路径基于 `spde-node/` 根目录 |
-
-### proxy — 代理配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `http_proxy` | string | `""` | HTTP 代理地址，如 `http://127.0.0.1:7890` |
-| `https_proxy` | string | `""` | HTTPS 代理地址，如 `http://127.0.0.1:7890` |
-
-### controller — PK 主控连接配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `url` | string | `""` | PK 主控地址（如 `http://10.0.0.8:5566`），优先级低于 `--master` 命令行参数 |
-| `token` | string | `""` | 与 PK 通信的 Bearer Token，优先级低于 `--token` 命令行参数 |
+| 段 | 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| output | `save_path` | string | `"./download"` | 保存目录；相对 `spde-node/` |
+| proxy | `http_proxy` | string | `""` | HTTP 代理地址 |
+| proxy | `https_proxy` | string | `""` | HTTPS 代理地址 |
+| controller | `url` | string | `""` | PK 主控地址；优先级低于 `--master` |
+| controller | `token` | string | `""` | Bearer Token；优先级低于 `--token` |
 
 ### direct_tasks — 下载任务列表
-
-每个任务包含以下字段：
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `name` | string | — | 任务名称（显示用） |
-| `enable` | bool | `true` | 是否启用该任务（false 则跳过） |
-| `url` | string | — | 下载 URL（支持 HTTP/HTTPS，建议用支持 Range 的直链） |
-| `filename` | string | — | 保存到本地的文件名 |
-| `task_id` | string/null | `null` | 任务唯一标识（Agent 模式下由 PK 下发） |
-| `dispatch_id` | string/null | `null` | 调度实例标识（Agent 模式下由 PK 下发，用于任务同步和回报） |
+| `enable` | bool | `true` | 是否启用（false 跳过） |
+| `url` | string | — | 下载地址（建议支持 Range 的直链） |
+| `filename` | string | — | 本地保存文件名 |
+| `task_id` | string/null | `null` | 任务唯一标识（Agent 模式由 PK 下发） |
+| `dispatch_id` | string/null | `null` | 调度实例标识（Agent 模式用于同步与回报） |
 
 ### 完整配置示例
 
@@ -177,18 +193,19 @@ direct_tasks:
     filename: "file.zip"
 ```
 
-## CLI 命令汇总
+---
+
+## CLI 命令
 
 | 命令 | 说明 |
 |---|---|
-| `spde serve` | 启动本地下载服务，执行 config.yaml 中所有启用的任务，显示实时进度和最终汇总 |
-| `spde agent [--master URL] [--token TOKEN]` | 接入 PK 主控，注册节点、拉取任务、实时回传统计；未指定 master 时自动扫描局域网 |
-| `spde config` | 配置相关操作 |
-| `spde stats` | 查看统计信息 |
-| `spde --help` | 显示帮助信息 |
-| `spde --version` | 显示版本号 |
+| `spde serve` | 本地下载服务，执行全部启用任务并展示实时进度与汇总 |
+| `spde agent [--master URL] [--token TOKEN]` | 接入 PK 主控；未指定 master 自动扫描局域网 |
+| `spde config` | 配置管理 |
+| `spde stats` | 统计查询 |
+| `spde --help` / `spde --version` | 帮助 / 版本 |
 
-### serve 命令输出示例
+### serve 输出示意
 
 ```
 spde work root: "/path/to/spde-node"
@@ -212,7 +229,7 @@ enabled task count: 2
 ==============================
 ```
 
-### agent 命令输出示例
+### agent 输出示意
 
 ```
 spde work root: "/path/to/spde-node"
@@ -231,58 +248,64 @@ spde work root: "/path/to/spde-node"
 [agent] cancel removed task dispatch_id=...
 ```
 
-## Agent 模式通信协议
+---
 
-SPDE Agent 与 PK 主控之间通过 HTTP REST + WebSocket 双协议通信：
+## 通信协议
+
+SPDE Agent 与 PK 主控通过 **HTTP REST + WebSocket** 双通道通信。
 
 ### HTTP 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/agent/register` | 节点注册，提交 hostname/platform/arch/version，返回 node_id 和轮询间隔 |
-| GET | `/api/v1/nodes/{node_id}/config.yaml` | 拉取该节点的最新下载配置（含任务列表） |
-| GET | `/api/v1/overview` | 服务端探测接口（局域网自动发现时用于验证 PK） |
+| POST | `/api/v1/agent/register` | 节点注册，返回 `node_id` 与轮询间隔 |
+| GET | `/api/v1/nodes/{node_id}/config.yaml` | 拉取节点最新下载配置 |
+| GET | `/api/v1/overview` | 局域网发现时的服务端探测 |
 
 ### WebSocket 接口
 
-连接地址：`ws(s)://{master}/api/v1/agent/ws?node_id={node_id}`
+连接：`ws(s)://{master}/api/v1/agent/ws?node_id={node_id}`
 
-**客户端 → 服务端消息：**
+**客户端 → 服务端**
 
 | type | 字段 | 说明 |
 |---|---|---|
 | `pong` | — | 心跳响应 |
-| `status` | `active_tasks`, `bytes_downloaded`, `busy`, `last_error` | 节点状态上报（每 10 秒） |
+| `status` | `active_tasks`, `bytes_downloaded`, `busy`, `last_error` | 每 10 秒状态上报 |
 | `task_started` | `dispatch_id` | 任务开始通知 |
-| `task_report` | `dispatch_id`, `task_id`, `task_name`, `url`, `filename`, `file_size`, `downloaded_bytes`, `elapsed_secs`, `avg_speed_mbps`, `status`, `success_chunks`, `failed_chunks`, `error_msg` | 任务完成/失败详细回报 |
+| `task_report` | `dispatch_id`, `task_id`, `task_name`, `url`, `filename`, `file_size`, `downloaded_bytes`, `elapsed_secs`, `avg_speed_mbps`, `status`, `success_chunks`, `failed_chunks`, `error_msg` | 完成 / 失败详细回报 |
 
-**服务端 → 客户端消息：**
+**服务端 → 客户端**
 
 | type | 说明 |
 |---|---|
 | `ping` | 心跳探测 |
-| `config_changed` | 配置变更通知，Agent 收到后重新拉取 config.yaml 并同步任务 |
+| `config_changed` | 配置变更通知，触发重新拉取与任务同步 |
 
-## run-history.jsonl 记录格式
+---
 
-每条记录为一行 JSON，包含以下字段：
+## 数据记录（run-history.jsonl）
+
+每条记录为一行 JSON：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `timestamp` | string | 完成时间（ISO 8601，带时区） |
+| `timestamp` | string | 完成时间（ISO 8601 带时区） |
 | `task_name` | string | 任务名称 |
-| `url` | string | 下载 URL |
+| `url` | string | 下载地址 |
 | `filename` | string | 文件名 |
 | `file_size` | int | 文件总大小（字节） |
-| `downloaded_bytes` | int | 实际下载字节数（跳过的任务为 0） |
+| `downloaded_bytes` | int | 实际下载字节数（跳过为 0） |
 | `elapsed_secs` | float | 耗时（秒） |
 | `avg_speed_mbps` | float | 平均速度（MB/s） |
-| `status` | string | 任务状态：`success` / `skipped` / `failed` |
-| `success_chunks` | int | 成功下载的分片数 |
-| `failed_chunks` | int | 失败的分片数 |
+| `status` | string | `success` / `skipped` / `failed` |
+| `success_chunks` | int | 成功分片数 |
+| `failed_chunks` | int | 失败分片数 |
 | `error_msg` | string/null | 失败原因（成功为 null） |
 
-## 编译
+---
+
+## 构建与发布
 
 ### 本地编译
 
@@ -290,27 +313,33 @@ SPDE Agent 与 PK 主控之间通过 HTTP REST + WebSocket 双协议通信：
 # 当前平台
 cargo build --release
 
-# Linux x86_64 musl（静态链接）
+# Linux x86_64 musl 静态链接
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-### GitHub Actions 自动编译发布
+> 跨平台交叉编译（Linux musl）依赖 `cross` 工具链，预装 perl 以满足 vendored OpenSSL 编译要求，见 `Cross.toml`。
 
-项目已配置 `.github/workflows/release.yml`，推送 `v*` 格式的 tag 后自动：
+### GitHub Actions 自动发布
 
-1. 并行编译 5 个平台的 release 二进制
-2. 自动创建 GitHub Release
-3. 自动生成 Release Notes
-4. 上传所有平台二进制作为 Assets
+推送 `v*` tag 触发（`.github/workflows/release.yml`）：
+
+1. **五平台并行编译**：Windows x86_64 / Linux x86_64 musl / Linux aarch64 musl / macOS x86_64 / macOS aarch64
+2. **构建加速**：sccache + rust-cache；Linux musl 目标走 `cross` 容器化编译
+3. **共享库拉取**：自动 checkout `PandaNetOS/PandaNetOS` 并修正 path 依赖
+4. **产物命名**：release 二进制文件名携带版本号（如 `spde-v1.1.1-x86_64-linux-musl`）
+5. **自动 Release**：生成 Release Notes 并上传全部平台二进制
+6. **生态联动**：发布完成后触发 `pcdn-keeper` 上游重建（`repository_dispatch`）
 
 ```bash
-git tag -a v0.7.1 -m "SPDE v0.7.1"
-git push origin v0.7.1
+git tag -a v1.1.1 -m "SPDE v1.1.1"
+git push origin v1.1.1
 ```
 
-编译完成后前往 Releases 页面下载：https://github.com/pandamelive/spde/releases
+下载产物：<https://github.com/pandamelive/spde/releases>
 
-## License
+---
+
+## 许可证
 
 MIT
