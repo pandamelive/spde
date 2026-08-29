@@ -136,13 +136,9 @@ impl DownloadBackend for HttpDownloader {
         let output = if !accept_ranges || connections <= 1 || total_size < chunk_size * 2 {
             download_single(
                 &client,
-                &task.uri,
-                &task.save_path,
-                &task.headers,
-                task.dry_run,
-                task.resume,
-                task.timeout,
+                &task,
                 total_size,
+                progress.clone(),
                 controller.clone(),
             )
             .await
@@ -281,16 +277,11 @@ async fn probe_file(
 // ──────────────────────────────────────────────
 
 /// 单连接下载（无 Range 或单线程场景）
-#[allow(clippy::too_many_arguments)]
 async fn download_single(
     client: &Client,
-    url: &str,
-    file_path: &std::path::Path,
-    headers: &[(String, String)],
-    dry_run: bool,
-    resume: bool,
-    timeout: Option<Duration>,
+    task: &DownloadTask,
     total_size: u64,
+    progress: Option<Arc<dyn ProgressCallback>>,
     controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
     let mut output = DownloadOutput {
@@ -298,20 +289,20 @@ async fn download_single(
         ..Default::default()
     };
 
-    let deadline = timeout.map(|d| Instant::now() + d);
+    let deadline = task.timeout.map(|d| Instant::now() + d);
 
     // 断点续传：沿用已有本地大小（resume=false 时从零开始）
-    let local_size = if dry_run || !resume {
+    let local_size = if task.dry_run || !task.resume {
         0
     } else {
-        tokio::fs::metadata(file_path)
+        tokio::fs::metadata(&task.save_path)
             .await
             .map(|m| m.len())
             .unwrap_or(0)
     };
 
-    let mut req = client.get(url);
-    for (k, v) in headers {
+    let mut req = client.get(&task.uri);
+    for (k, v) in &task.headers {
         req = req.header(k, v);
     }
     if local_size > 0 {
@@ -323,15 +314,15 @@ async fn download_single(
         anyhow::bail!("http status: {}", resp.status());
     }
 
-    let mut file_opt = if dry_run {
+    let mut file_opt = if task.dry_run {
         None
     } else {
         let f = File::options()
             .create(true)
-            .truncate(!resume)
+            .truncate(!task.resume)
             .write(true)
             .read(true)
-            .open(file_path)
+            .open(&task.save_path)
             .await
             .context("open file failed")?;
         Some(f)
@@ -342,6 +333,8 @@ async fn download_single(
     }
 
     let mut stream = resp.bytes_stream();
+    let dl_start = Instant::now();
+    let mut last_progress = Instant::now();
     while let Some(chunk_res) = stream.next().await {
         // 超时检查（循环开始时，保证后续迭代也会离开）
         if let Some(d) = deadline {
@@ -363,6 +356,33 @@ async fn download_single(
                 }
                 output.downloaded_bytes += chunk.len() as u64;
                 output.success_chunks += 1;
+
+                // 进度回调（与 file/ftp 后端一致：按 progress_interval 节流）
+                if let Some(cb) = &progress {
+                    if last_progress.elapsed() >= task.progress_interval {
+                        let elapsed = dl_start.elapsed().as_secs_f64();
+                        let speed = if elapsed > 0.0 {
+                            (output.downloaded_bytes as f64 / elapsed) as u64
+                        } else {
+                            0
+                        };
+                        let percent = if total_size > 0 {
+                            output.downloaded_bytes as f64 / total_size as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        cb.on_progress(ProgressSnapshot {
+                            task_id: task.task_id.clone(),
+                            total_size,
+                            downloaded_bytes: output.downloaded_bytes,
+                            speed_bps: speed,
+                            active_connections: 1,
+                            percent,
+                            elapsed_secs: elapsed,
+                        });
+                        last_progress = Instant::now();
+                    }
+                }
             }
             Err(e) => {
                 output.failed_chunks += 1;

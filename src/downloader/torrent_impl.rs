@@ -9,7 +9,7 @@
 use super::*;
 use anyhow::{anyhow, Context, Result};
 use librqbit::{AddTorrent, Session};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -261,5 +261,3 @@ struct TorrentProgressState {
     speed: AtomicU64,
     peers: AtomicU32,
 }
-
-use std::sync::atomic::AtomicU32;

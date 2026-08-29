@@ -258,8 +258,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     };
     let sem = Arc::new(Semaphore::new(max_concurrent));
 
-    // 任务完成通知通道
-    let (task_done_tx, mut task_done_rx) = mpsc::channel::<()>(64);
+    // 任务完成通知通道（每完成一个任务推一条 dispatch_id，供主循环清理 running 表）
+    let (task_done_tx, mut task_done_rx) = mpsc::channel::<Uuid>(64);
 
     // 8. 定期状态上报（通过 WebSocket）
     {
@@ -376,6 +376,13 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
             continue;
         }
 
+        // 清理已完成任务（running 表只增不减会累积 JoinHandle/锁/句柄）
+        while let Ok(done_id) = task_done_rx.try_recv() {
+            if running.lock().await.remove(&done_id).is_some() {
+                log!("[agent] task {} finished, removed from running table", done_id);
+            }
+        }
+
         // 先获取 permit，确保不会超额领取（permit 在下载 task 内部释放）
         let permit = match sem.clone().acquire_owned().await {
             Ok(p) => p,
@@ -424,7 +431,17 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                             *global_cfg.lock().await = cfg;
                         }
                     }
-                    _ = task_done_rx.recv() => {}
+                    _ = task_done_rx.recv() => {
+                        // 有任务完成：顺手清理 running 表中的已完成条目
+                        while let Ok(done_id) = task_done_rx.try_recv() {
+                            if running.lock().await.remove(&done_id).is_some() {
+                                log!(
+                                    "[agent] task {} finished, removed from running table",
+                                    done_id
+                                );
+                            }
+                        }
+                    }
                     _ = tokio::signal::ctrl_c() => {
                         log!("[agent] received exit signal, stopping");
                         break;
@@ -514,7 +531,7 @@ fn spawn_download_task(
     progress_map: ProgressMap,
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
-    task_done_tx: mpsc::Sender<()>,
+    task_done_tx: mpsc::Sender<Uuid>,
 ) -> (Uuid, JoinHandle<()>, Arc<DownloadController>) {
     let dispatch_id = task.dispatch_id;
     let task_id = Some(task.task_id);
@@ -634,7 +651,8 @@ fn spawn_download_task(
 
         active.fetch_sub(1, Ordering::Relaxed);
         drop(permit);
-        let _ = task_done_tx.send(()).await;
+        // 通知主循环清理 running 表（携带 dispatch_id）
+        let _ = task_done_tx.send(dispatch_id).await;
     });
 
     (dispatch_id, handle, controller)
