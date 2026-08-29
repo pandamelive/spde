@@ -86,7 +86,11 @@ jobs:
 
       - name: Build with cross (Linux musl)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          cp -r ../PandaNetOS ./PandaNetOS
+          sed -i 's|../PandaNetOS|PandaNetOS|g' Cargo.toml
+          cross build --release --target ${{ matrix.target }}
 
       - name: Build with sccache (Windows/macOS)
         if: ${{ !matrix.cross }}
