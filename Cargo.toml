@@ -1,6 +1,6 @@
 [package]
 name = "spde"
-version = "1.1"
+version = "1.1.0"
 edition = "2021"
 description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
 license = "MIT"
@@ -29,8 +29,6 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
-# librqbit 通过 crypto-hash 引入 openssl，vendored 模式编译时自动下载编译 OpenSSL
-# 解决 musl/Windows 交叉编译时找不到系统 OpenSSL 的问题
 openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
@@ -46,7 +44,5 @@ name = "spde"
 path = "src/bin/main.rs"
 
 [profile.release]
-# 增加并行编译单元，加快编译速度（默认16，二进制稍大但下载工具可接受）
 codegen-units = 256
-# 关闭链接时优化，大幅加快链接速度（默认就是false，显式声明）
 lto = false
