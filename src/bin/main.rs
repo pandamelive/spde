@@ -379,7 +379,11 @@ async fn print_stats(paths: &SpdePaths) -> Result<()> {
         "总记录数: {} (成功: {} 失败: {})",
         record_count, success_count, fail_count
     );
-    eprintln!("累计下载量: {:.1} MB ({:.2} GB)", total_mb, total_mb / 1024.0);
+    eprintln!(
+        "累计下载量: {:.1} MB ({:.2} GB)",
+        total_mb,
+        total_mb / 1024.0
+    );
     eprintln!(
         "累计耗时: {:.1} s, 平均速度: {:.1} MB/s, 峰值速度: {:.1} MB/s",
         total_elapsed, avg_speed_mbps, max_speed_mbps

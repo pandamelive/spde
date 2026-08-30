@@ -97,10 +97,7 @@ impl ChunkScheduler {
 
                 // 更新 ChunkSet 中的状态
                 let mut chunk_set = self.chunk_set.lock().await;
-                if let Some(chunk) = chunk_set
-                    .chunks
-                    .get_mut(pending.chunk_id as usize)
-                {
+                if let Some(chunk) = chunk_set.chunks.get_mut(pending.chunk_id as usize) {
                     chunk.state = ChunkState::Downloading;
                     chunk.retry_count = pending.retry_count;
                 }

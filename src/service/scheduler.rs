@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pandanetos::domain::{
-    ChunkDownloader, ChunkSet, ChunkWriter, CancellationToken, DownloadProgress,
-    DownloadResult, DownloadSource, DownloadStrategy, SourceCapabilities,
+    CancellationToken, ChunkDownloader, ChunkSet, ChunkWriter, DownloadProgress, DownloadResult,
+    DownloadSource, DownloadStrategy, SourceCapabilities,
 };
 use pandanetos::error::{CoreError, Result};
 use tokio::sync::{mpsc, Mutex};
@@ -111,11 +111,19 @@ impl DownloadScheduler {
 
         // 5. 创建写入器（.part 临时文件）
         let part_path = save_path.with_extension("part");
-        let writer = Arc::new(crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone()).await?);
+        let writer = Arc::new(
+            crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone()).await?,
+        );
 
         // 6. 执行策略
         let result = strategy
-            .execute(sources, chunk_set, writer.clone(), progress_tx, cancel.clone())
+            .execute(
+                sources,
+                chunk_set,
+                writer.clone(),
+                progress_tx,
+                cancel.clone(),
+            )
             .await?;
 
         // 7. 收尾：rename .part → 目标文件
@@ -127,10 +135,7 @@ impl DownloadScheduler {
             tokio::fs::rename(&part_path, &save_path)
                 .await
                 .map_err(|e| {
-                    CoreError::Internal(format!(
-                        "rename {:?} -> {:?}: {}",
-                        part_path, save_path, e
-                    ))
+                    CoreError::Internal(format!("rename {:?} -> {:?}: {}", part_path, save_path, e))
                 })?;
             eprintln!("[scheduler] download complete: {:?}", save_path);
         }

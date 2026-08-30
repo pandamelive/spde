@@ -15,24 +15,24 @@ pub mod service;
 
 // 旧版下载器（兼容保留，逐步迁移到 infra/ 下的协议适配器）
 pub mod downloader;
+#[cfg(feature = "ftp")]
+pub use downloader::FtpDownloader;
+#[cfg(feature = "torrent")]
+pub use downloader::TorrentDownloader;
 pub use downloader::{
     build_default_manager, DownloadBackend, DownloadManager, DownloadOutput, DownloadTask,
     FileDownloader, HttpDownloader, ProgressCallback, ProgressSnapshot, SshDownloader,
     StderrProgress,
 };
-#[cfg(feature = "ftp")]
-pub use downloader::FtpDownloader;
-#[cfg(feature = "torrent")]
-pub use downloader::TorrentDownloader;
 
 // 新版智能下载器导出
-pub use service::scheduler::DownloadScheduler;
-pub use service::source_manager::SourceManager;
-pub use service::chunk_scheduler::ChunkScheduler;
-pub use service::progress::ProgressSmoother;
-pub use service::mirror_bus::MirrorBus;
-pub use service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;
 pub use infra::disk::file_writer::FileChunkWriter;
-pub use infra::http::source::HttpSource;
 pub use infra::http::downloader::HttpChunkDownloader;
 pub use infra::http::mirror::dns::DnsMultiIpDiscoverer;
+pub use infra::http::source::HttpSource;
+pub use service::chunk_scheduler::ChunkScheduler;
+pub use service::mirror_bus::MirrorBus;
+pub use service::progress::ProgressSmoother;
+pub use service::scheduler::DownloadScheduler;
+pub use service::source_manager::SourceManager;
+pub use service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;

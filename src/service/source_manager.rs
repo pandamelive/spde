@@ -49,7 +49,10 @@ impl SourceManager {
     ///
     /// 速度快的源被选中概率高。熔断的源不会被选中。
     /// 如果所有源都熔断了，返回 None。
-    pub async fn pick_source(&self, sources: &[Arc<dyn DownloadSource>]) -> Option<Arc<dyn DownloadSource>> {
+    pub async fn pick_source(
+        &self,
+        sources: &[Arc<dyn DownloadSource>],
+    ) -> Option<Arc<dyn DownloadSource>> {
         let health = self.health.lock().await;
 
         // 筛选未熔断的源，计算总权重
@@ -193,7 +196,7 @@ mod tests {
             chunk_id: 0,
             source_id: source.identifier(),
             downloaded_bytes: 1024 * 1024, // 1MB
-            elapsed_secs: 1.0,              // 1秒
+            elapsed_secs: 1.0,             // 1秒
             success: true,
             error_code: None,
         };

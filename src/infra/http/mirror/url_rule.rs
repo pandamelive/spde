@@ -72,7 +72,10 @@ impl UrlRule {
                     None
                 }
             }
-            UrlRule::RegexReplace { pattern, replacement } => {
+            UrlRule::RegexReplace {
+                pattern,
+                replacement,
+            } => {
                 if let Ok(re) = Regex::new(pattern) {
                     if re.is_match(url) {
                         Some(re.replace_all(url, replacement.as_str()).to_string())
@@ -159,7 +162,10 @@ impl UrlRuleDiscoverer {
                     .or_default()
                     .push(rule);
             }
-            info!("URL 规则镜像发现器: 加载 {} 条内置 Apple 固件规则", builtin_apple_rules().len());
+            info!(
+                "URL 规则镜像发现器: 加载 {} 条内置 Apple 固件规则",
+                builtin_apple_rules().len()
+            );
         }
 
         for rule in custom_rules {
@@ -287,10 +293,7 @@ impl MirrorDiscoverer for UrlRuleDiscoverer {
         for (mirror_url, _priority) in mirrors {
             let available = self.verify_mirror(&mirror_url).await;
             if available {
-                info!(
-                    "URL 规则镜像发现器: 镜像 {} 可用",
-                    mirror_url
-                );
+                info!("URL 规则镜像发现器: 镜像 {} 可用", mirror_url);
                 let http_source = HttpSource::new(mirror_url);
                 result.push(Box::new(http_source) as Box<dyn DownloadSource>);
             } else {
@@ -360,7 +363,9 @@ mod tests {
     #[test]
     fn test_extract_domain() {
         assert_eq!(
-            UrlRuleDiscoverer::extract_domain("http://updates-http.cdn-apple.com/2026/01/iPhone.ipsw"),
+            UrlRuleDiscoverer::extract_domain(
+                "http://updates-http.cdn-apple.com/2026/01/iPhone.ipsw"
+            ),
             Some("updates-http.cdn-apple.com".to_string())
         );
         assert_eq!(
@@ -378,8 +383,12 @@ mod tests {
 
         // 应该生成 2 个镜像（updates.cdn-apple.com 和 appldnld.apple.com）
         assert!(!mirrors.is_empty());
-        assert!(mirrors.iter().any(|(u, _)| u.contains("updates.cdn-apple.com")));
-        assert!(mirrors.iter().any(|(u, _)| u.contains("appldnld.apple.com")));
+        assert!(mirrors
+            .iter()
+            .any(|(u, _)| u.contains("updates.cdn-apple.com")));
+        assert!(mirrors
+            .iter()
+            .any(|(u, _)| u.contains("appldnld.apple.com")));
     }
 
     #[test]

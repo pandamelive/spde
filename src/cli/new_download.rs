@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use pandanetos::domain::DownloadProgress;
 
-use crate::cli::config::{TaskParams, SpdeConfig, TaskOverrides};
+use crate::cli::config::{SpdeConfig, TaskOverrides, TaskParams};
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
 use crate::domain::DownloadConfig;
 use crate::infra::http::downloader::HttpChunkDownloader;
@@ -100,7 +100,9 @@ pub async fn execute_download(
 
     // 注册镜像发现器（注意：register 是 async 方法，期望 Box<dyn MirrorDiscoverer>）
     let mirror_bus = scheduler.mirror_bus();
-    mirror_bus.register(Box::new(DnsMultiIpDiscoverer::new())).await;
+    mirror_bus
+        .register(Box::new(DnsMultiIpDiscoverer::new()))
+        .await;
     // UrlRuleDiscoverer::new 返回 Arc，这里暂时用 DnsMultiIpDiscoverer 作为示例
     // 后续可以扩展 UrlRuleDiscoverer 的构造函数，返回 Self 而不是 Arc
     // mirror_bus.register(Box::new(UrlRuleDiscoverer::new(true, Vec::new()))).await;
@@ -159,12 +161,7 @@ pub async fn execute_download(
 
     // 执行下载
     let result = scheduler
-        .download(
-            Box::new(source),
-            downloader,
-            save_path.clone(),
-            progress_tx,
-        )
+        .download(Box::new(source), downloader, save_path.clone(), progress_tx)
         .await;
 
     // 等待进度转发完成（progress_rx 已经被 move 到 progress_handle 闭包中）
@@ -208,7 +205,7 @@ pub async fn execute_download(
         elapsed_secs: elapsed,
         avg_speed_mbps: avg_speed_mbps,
         status,
-        success_chunks: 0,  // 新架构后续补充
+        success_chunks: 0, // 新架构后续补充
         failed_chunks: 0,
         error_msg: error_msg.as_deref(),
     })
@@ -230,6 +227,10 @@ pub async fn execute_download(
 ///
 /// 已完全切换到新架构，始终返回 true。
 /// 保留此函数是为了兼容现有调用点，后续可直接移除。
-pub fn should_use_new_downloader(_url: &str, _task_overrides: &TaskOverrides, _cfg: &SpdeConfig) -> bool {
+pub fn should_use_new_downloader(
+    _url: &str,
+    _task_overrides: &TaskOverrides,
+    _cfg: &SpdeConfig,
+) -> bool {
     true
 }
