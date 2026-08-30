@@ -33,6 +33,7 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
+openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [features]
 default = ["ftp", "torrent"]
