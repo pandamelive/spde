@@ -16,7 +16,7 @@ jobs:
       - name: Checkout PandaNetOS (path dependency)
         run: |
           git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
-          ln -sf ../PandaNetOS ../pandanetos 2>/dev/null || true
+          ln -sf PandaNetOS ../pandanetos 2>/dev/null || true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
