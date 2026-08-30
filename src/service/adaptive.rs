@@ -5,6 +5,9 @@
 //! - **运行时动态调整**：根据实时速度趋势增加/减少连接数
 //! - **CDN 限速识别**：当速度增长停滞时，判定为 CDN 限速，停止增加连接
 //! - **退避机制**：连接失败率过高时自动减少连接数
+//! - **限速恢复探测**：判定为 CDN 限速后，定期试探是否恢复
+//! - **指数退避**：连续失败时连接数减少量指数增长
+//! - **动态阈值**：连接数越多，增长阈值越低，避免高连接数时误判
 //!
 //! 协议无关，只依赖速度采样和连接状态统计。
 
@@ -33,10 +36,17 @@ pub struct AdaptiveConfig {
     pub stagnation_limit: u32,
     /// 失败率阈值（0.0-1.0），超过则减少连接
     pub failure_rate_threshold: f64,
-    /// 每次调整的连接数变化量
+    /// 每次调整的连接数变化量（基础步长）
     pub adjust_step: u32,
     /// 是否启用自适应（false 时固定用 initial_connections）
     pub enabled: bool,
+    /// 限速恢复探测间隔（秒）
+    /// 判定为 CDN 限速后，每隔这么久试探一次是否恢复
+    pub throttle_recovery_interval_secs: u64,
+    /// 指数退避因子（失败率过高时，连接数减少的倍数）
+    pub exponential_backoff_factor: f64,
+    /// 动态阈值：连接数越多，增长阈值越低（避免高连接数时误判）
+    pub dynamic_threshold_enabled: bool,
 }
 
 impl Default for AdaptiveConfig {
@@ -51,6 +61,9 @@ impl Default for AdaptiveConfig {
             failure_rate_threshold: 0.3,
             adjust_step: 2,
             enabled: true,
+            throttle_recovery_interval_secs: 60, // 60秒试探一次
+            exponential_backoff_factor: 1.5,     // 每次失败减少 1.5 倍
+            dynamic_threshold_enabled: true,     // 启用动态阈值
         }
     }
 }
@@ -90,6 +103,12 @@ pub struct AdaptiveController {
     is_throttled: AtomicU32,
     /// 启动时间
     start_time: Instant,
+    /// 上次限速恢复探测时间
+    last_recovery_probe: Mutex<Instant>,
+    /// 指数退避计数（连续失败次数，用于计算退避量）
+    backoff_count: AtomicU32,
+    /// 限速前的连接数（恢复试探时用）
+    pre_throttle_connections: AtomicU32,
 }
 
 impl AdaptiveController {
@@ -109,6 +128,9 @@ impl AdaptiveController {
             last_adjust: Mutex::new(Instant::now()),
             is_throttled: AtomicU32::new(0),
             start_time: Instant::now(),
+            last_recovery_probe: Mutex::new(Instant::now()),
+            backoff_count: AtomicU32::new(0),
+            pre_throttle_connections: AtomicU32::new(initial),
             config,
         })
     }
@@ -143,6 +165,88 @@ impl AdaptiveController {
         if !success {
             self.failed_requests.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// 计算动态速度增长阈值
+    ///
+    /// 连接数越多，增长阈值越低（避免高连接数时误判限速）。
+    /// 例如：2连接时阈值 5%，16连接时阈值 2%，32连接时阈值 1%。
+    fn dynamic_growth_threshold(&self, current_connections: u32) -> f64 {
+        if !self.config.dynamic_threshold_enabled {
+            return self.config.speed_growth_threshold;
+        }
+
+        let base = self.config.speed_growth_threshold;
+        let max_conn = self.config.max_connections.max(1) as f64;
+        let conn = current_connections.max(1) as f64;
+
+        // 线性衰减：连接数从 1 到 max，阈值从 base*2 衰减到 base*0.3
+        let ratio = (conn - 1.0) / (max_conn - 1.0);
+        let threshold = base * (2.0 - 1.7 * ratio);
+
+        threshold.max(base * 0.2) // 最低不低于 base 的 20%
+    }
+
+    /// 计算指数退避后的连接数减少量
+    ///
+    /// 连续失败次数越多，减少量越大（指数增长）。
+    fn exponential_backoff_step(&self) -> u32 {
+        let count = self.backoff_count.load(Ordering::Relaxed);
+        let base = self.config.adjust_step as f64;
+        let factor = self.config.exponential_backoff_factor;
+
+        // 指数增长：base * factor^count
+        let step = (base * factor.powi(count as i32)).round() as u32;
+        step.max(1) // 至少减少 1
+    }
+
+    /// 检查是否需要进行限速恢复探测
+    ///
+    /// 判定为 CDN 限速后，每隔一段时间试探一次是否恢复。
+    /// 如果恢复，解除限速状态并继续增加连接。
+    async fn check_throttle_recovery(&self) -> bool {
+        if !self.is_throttled() {
+            return false;
+        }
+
+        let mut last_probe = self.last_recovery_probe.lock().await;
+        if last_probe.elapsed() < Duration::from_secs(self.config.throttle_recovery_interval_secs) {
+            return false;
+        }
+        *last_probe = Instant::now();
+        drop(last_probe);
+
+        // 检查最近的速度是否有增长迹象
+        let growth_rate = self.speed_growth_rate().await;
+        let current = self.current_connections.load(Ordering::Relaxed);
+        let threshold = self.dynamic_growth_threshold(current);
+
+        if growth_rate > threshold {
+            // 速度有增长，可能限速已恢复
+            self.is_throttled.store(0, Ordering::Relaxed);
+            self.stagnation_count.store(0, Ordering::Relaxed);
+            self.backoff_count.store(0, Ordering::Relaxed);
+
+            // 恢复到限速前的连接数
+            let pre_throttle = self.pre_throttle_connections.load(Ordering::Relaxed);
+            let new_conn = pre_throttle.max(current);
+            self.current_connections.store(new_conn, Ordering::Relaxed);
+
+            info!(
+                "自适应: CDN 限速可能已恢复（增长率 {:.2}% > 阈值 {:.2}%），连接数恢复到 {}",
+                growth_rate * 100.0,
+                threshold * 100.0,
+                new_conn
+            );
+            return true;
+        }
+
+        debug!(
+            "自适应: CDN 限速恢复探测（增长率 {:.2}% <= 阈值 {:.2}%），继续保持限速",
+            growth_rate * 100.0,
+            threshold * 100.0
+        );
+        false
     }
 
     /// 计算当前失败率
@@ -210,22 +314,38 @@ impl AdaptiveController {
         let current = self.current_connections.load(Ordering::Relaxed);
         let failure_rate = self.failure_rate();
 
-        // 1. 失败率过高，减少连接
+        // 0. 检查限速恢复（如果处于限速状态）
+        if self.check_throttle_recovery().await {
+            let new_conn = self.current_connections.load(Ordering::Relaxed);
+            return (true, new_conn);
+        }
+
+        // 1. 失败率过高，减少连接（指数退避）
         if failure_rate > self.config.failure_rate_threshold
             && current > self.config.min_connections
         {
+            let backoff_step = self.exponential_backoff_step();
             let new_conn = current
-                .saturating_sub(self.config.adjust_step)
+                .saturating_sub(backoff_step)
                 .max(self.config.min_connections);
             self.current_connections.store(new_conn, Ordering::Relaxed);
             self.stagnation_count.store(0, Ordering::Relaxed);
+            self.backoff_count.fetch_add(1, Ordering::Relaxed);
+
             warn!(
-                "自适应: 失败率 {:.1}% 过高，连接数 {} -> {}",
+                "自适应: 失败率 {:.1}% 过高，指数退避（第{}次），连接数 {} -> {}（减少{}）",
                 failure_rate * 100.0,
+                self.backoff_count.load(Ordering::Relaxed),
                 current,
-                new_conn
+                new_conn,
+                backoff_step
             );
             return (true, new_conn);
+        }
+
+        // 失败率恢复正常，重置退避计数
+        if failure_rate < self.config.failure_rate_threshold * 0.5 {
+            self.backoff_count.store(0, Ordering::Relaxed);
         }
 
         // 2. 已经是最大连接数，不再增加
@@ -239,41 +359,58 @@ impl AdaptiveController {
             return (false, current);
         }
 
-        // 4. 检查速度增长
+        // 4. 检查速度增长（使用动态阈值）
         let growth_rate = self.speed_growth_rate().await;
-        if growth_rate < self.config.speed_growth_threshold {
+        let threshold = self.dynamic_growth_threshold(current);
+
+        if growth_rate < threshold {
             // 速度增长停滞
             let stagnation = self.stagnation_count.fetch_add(1, Ordering::Relaxed) + 1;
             if stagnation >= self.config.stagnation_limit {
                 // 连续多次停滞，判定为 CDN 限速
                 self.is_throttled.store(1, Ordering::Relaxed);
+                self.pre_throttle_connections
+                    .store(current, Ordering::Relaxed);
+
                 info!(
-                    "自适应: 速度连续 {} 次增长停滞（增长率 {:.2}%），判定为 CDN 限速，固定连接数 {}",
+                    "自适应: 速度连续 {} 次增长停滞（增长率 {:.2}% < 动态阈值 {:.2}%），判定为 CDN 限速，固定连接数 {}",
                     stagnation,
                     growth_rate * 100.0,
+                    threshold * 100.0,
                     current
                 );
                 return (true, current);
             }
+
             debug!(
-                "自适应: 速度增长停滞 {}/{}（增长率 {:.2}%），保持连接数 {}",
+                "自适应: 速度增长停滞 {}/{}（增长率 {:.2}% < 动态阈值 {:.2}%），保持连接数 {}",
                 stagnation,
                 self.config.stagnation_limit,
                 growth_rate * 100.0,
+                threshold * 100.0,
                 current
             );
             return (false, current);
         }
 
-        // 5. 速度仍在增长，增加连接数
-        let new_conn = (current + self.config.adjust_step).min(self.config.max_connections);
+        // 5. 速度仍在增长，增加连接数（自适应步长：增长越快，增加越多）
+        let growth_ratio = if threshold > 0.0 {
+            (growth_rate / threshold).min(3.0).max(1.0)
+        } else {
+            1.0
+        };
+        let adaptive_step = (self.config.adjust_step as f64 * growth_ratio).round() as u32;
+        let new_conn = (current + adaptive_step).min(self.config.max_connections);
         self.current_connections.store(new_conn, Ordering::Relaxed);
         self.stagnation_count.store(0, Ordering::Relaxed);
+
         info!(
-            "自适应: 速度增长 {:.2}%，连接数 {} -> {}",
+            "自适应: 速度增长 {:.2}% > 动态阈值 {:.2}%，连接数 {} -> {}（增加{}）",
             growth_rate * 100.0,
+            threshold * 100.0,
             current,
-            new_conn
+            new_conn,
+            adaptive_step
         );
         (true, new_conn)
     }
@@ -330,8 +467,9 @@ impl AdaptiveController {
     /// 获取统计信息
     pub async fn stats(&self) -> AdaptiveStats {
         let samples = self.samples.lock().await;
+        let current = self.current_connections.load(Ordering::Relaxed);
         AdaptiveStats {
-            current_connections: self.current_connections.load(Ordering::Relaxed),
+            current_connections: current,
             is_throttled: self.is_throttled(),
             failure_rate: self.failure_rate(),
             total_requests: self.total_requests.load(Ordering::Relaxed),
@@ -339,6 +477,9 @@ impl AdaptiveController {
             stagnation_count: self.stagnation_count.load(Ordering::Relaxed),
             sample_count: samples.len(),
             elapsed_secs: self.start_time.elapsed().as_secs(),
+            dynamic_threshold: self.dynamic_growth_threshold(current),
+            backoff_count: self.backoff_count.load(Ordering::Relaxed),
+            pre_throttle_connections: self.pre_throttle_connections.load(Ordering::Relaxed),
         }
     }
 }
@@ -362,4 +503,10 @@ pub struct AdaptiveStats {
     pub sample_count: usize,
     /// 运行时长（秒）
     pub elapsed_secs: u64,
+    /// 当前动态阈值
+    pub dynamic_threshold: f64,
+    /// 指数退避计数
+    pub backoff_count: u32,
+    /// 限速前的连接数
+    pub pre_throttle_connections: u32,
 }

@@ -370,7 +370,8 @@ pub use torrent_impl::TorrentDownloader;
 /// 构建带全部默认后端的 DownloadManager
 pub fn build_default_manager() -> DownloadManager {
     let mut mgr = DownloadManager::new();
-    mgr.register_backend(HttpDownloader::new());
+    // HTTP/HTTPS 使用新架构（分片下载 + 多连接 + 断点续传）
+    mgr.register_backend(http_impl::ChunkedHttpDownloader::new());
     mgr.register_backend(SshDownloader::new());
     mgr.register_backend(FileDownloader::new());
     #[cfg(feature = "ftp")]

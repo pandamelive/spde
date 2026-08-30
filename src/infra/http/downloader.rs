@@ -115,7 +115,14 @@ impl ChunkDownloader for HttpChunkDownloader {
             )));
         }
 
-        let size_bytes = resp.content_length().unwrap_or(0);
+        // 注意：不能用 resp.content_length()，因为对 HEAD 请求它返回 0
+        // （HEAD 没有响应体），必须直接从 Content-Length 头读取资源大小
+        let size_bytes = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
         let supports_resume = resp
             .headers()
             .get("accept-ranges")
@@ -158,16 +165,21 @@ impl ChunkDownloader for HttpChunkDownloader {
             })?;
 
         let status = resp.status();
-        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+        // 必须是 206 Partial Content 才说明服务器接受了 Range 请求
+        // 如果返回 200 OK，说明服务器忽略了 Range 头，返回了整个文件
+        if status != reqwest::StatusCode::PARTIAL_CONTENT {
             let error_code = if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
                 codes::DOWNLOAD_RANGE_NOT_SATISFIABLE
             } else if status == reqwest::StatusCode::REQUEST_TIMEOUT {
                 codes::DOWNLOAD_TIMEOUT
-            } else {
+            } else if !status.is_success() {
                 codes::DOWNLOAD_CONNECTION_FAILED
+            } else {
+                // 200 OK 但不是 206：服务器不支持 Range
+                codes::DOWNLOAD_RANGE_NOT_SATISFIABLE
             };
             return Err(CoreError::Internal(format!(
-                "{}: HTTP {}",
+                "{}: expected 206 Partial Content, got HTTP {} (server may not support Range)",
                 error_code, status
             )));
         }

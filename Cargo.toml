@@ -1,3 +1,7 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
 [package]
 name = "spde"
 version = "1.2.0"
@@ -33,7 +37,7 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
-openssl-sys = { version = "0.9", features = ["vendored"] }
+openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
 default = ["ftp", "torrent"]
@@ -51,7 +55,5 @@ name = "spde"
 path = "src/bin/main.rs"
 
 [profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
+codegen-units = 256
+lto = false

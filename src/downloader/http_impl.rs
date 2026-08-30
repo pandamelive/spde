@@ -760,3 +760,171 @@ async fn download_range(
 
     Ok(())
 }
+
+// ──────────────────────────────────────────────
+// 新架构后端：基于 DownloadScheduler + HttpChunkDownloader
+// ──────────────────────────────────────────────
+
+use crate::domain::DownloadConfig;
+use crate::infra::http::downloader::HttpChunkDownloader;
+use crate::infra::http::source::HttpSource;
+use crate::service::scheduler::DownloadScheduler;
+use pandanetos::domain::{DownloadProgress, DownloadSource};
+use tokio::sync::mpsc;
+
+/// 新架构 HTTP 下载后端（serve 模式使用）
+pub struct ChunkedHttpDownloader;
+
+impl Default for ChunkedHttpDownloader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChunkedHttpDownloader {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl DownloadBackend for ChunkedHttpDownloader {
+    fn name(&self) -> &str {
+        "http-chunked"
+    }
+
+    fn support_uri(&self, uri: &str) -> bool {
+        uri.starts_with("http://") || uri.starts_with("https://")
+    }
+
+    async fn run(
+        &self,
+        task: DownloadTask,
+        progress: Option<Arc<dyn ProgressCallback>>,
+        _controller: Option<Arc<DownloadController>>,
+    ) -> Result<DownloadOutput> {
+        let start = Instant::now();
+        let task_id = task.task_id.clone();
+
+        // 1. 构建下载源
+        let source: Box<dyn DownloadSource> = Box::new(HttpSource::new(task.uri.clone()));
+
+        // 2. 确保保存目录存在
+        let save_path = task.save_path.clone();
+        if let Some(parent) = save_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+
+        // 3. 构建下载配置
+        let config = DownloadConfig {
+            max_connections: task.effective_connections(),
+            min_connections: 1,
+            chunk_size: task.effective_chunk_size(),
+            retry_times: task.retry_times,
+            timeout_secs: task.timeout.map(|d| d.as_secs()).unwrap_or(1800),
+            resume: task.resume,
+            skip_tls_verify: task.skip_tls_verify,
+            max_bandwidth_bps: task.speed_limit,
+            enable_mirror_discovery: false,
+            enable_adaptive: true,
+            enable_progress_smoothing: true,
+            save_dir: save_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
+        };
+
+        // 4. 构建分片下载器和调度器
+        let chunk_downloader = Arc::new(HttpChunkDownloader::new(
+            task.skip_tls_verify,
+            config.timeout_secs,
+        ));
+        let scheduler = DownloadScheduler::new(config);
+
+        // 5. 进度通道
+        let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(256);
+
+        // 6. 后台任务：接收进度并转发给 ProgressCallback
+        let progress_clone = progress.clone();
+        let task_id_clone = task_id.clone();
+        let progress_handle = tokio::spawn(async move {
+            while let Some(p) = progress_rx.recv().await {
+                if let Some(cb) = &progress_clone {
+                    let snapshot = ProgressSnapshot {
+                        task_id: task_id_clone.clone(),
+                        total_size: p.total_bytes,
+                        downloaded_bytes: p.downloaded_bytes,
+                        speed_bps: p.speed_bps,
+                        active_connections: p.active_connections,
+                        percent: if p.total_bytes > 0 {
+                            (p.downloaded_bytes as f64 / p.total_bytes as f64) * 100.0
+                        } else {
+                            0.0
+                        },
+                        elapsed_secs: start.elapsed().as_secs_f64(),
+                    };
+                    cb.on_progress(snapshot);
+                }
+            }
+        });
+
+        // 7. 执行下载（scheduler 内部创建 writer 和 .part 文件）
+        let result = scheduler
+            .download(source, chunk_downloader, save_path.clone(), progress_tx)
+            .await;
+
+        // 8. 等待进度转发完成
+        drop(progress_handle);
+
+        // 9. 转换结果
+        let elapsed = start.elapsed().as_secs_f64();
+        match result {
+            Ok(r) => {
+                let output = DownloadOutput {
+                    total_size: r.total_bytes,
+                    downloaded_bytes: r.downloaded_bytes,
+                    success_chunks: r.success_chunks,
+                    failed_chunks: r.failed_chunks,
+                    is_success: r.success,
+                    error_msg: r.error_msg,
+                    elapsed_secs: elapsed,
+                    avg_speed_mbps: if elapsed > 0.0 {
+                        (r.downloaded_bytes as f64 / 1024.0 / 1024.0) / elapsed
+                    } else {
+                        0.0
+                    },
+                    status: if r.success {
+                        "completed".into()
+                    } else {
+                        "failed".into()
+                    },
+                };
+
+                if let Some(cb) = &progress {
+                    cb.on_complete(output.clone());
+                }
+
+                Ok(output)
+            }
+            Err(e) => {
+                let output = DownloadOutput {
+                    total_size: 0,
+                    downloaded_bytes: 0,
+                    success_chunks: 0,
+                    failed_chunks: 0,
+                    is_success: false,
+                    error_msg: Some(format!("{e:#}")),
+                    elapsed_secs: elapsed,
+                    avg_speed_mbps: 0.0,
+                    status: "error".into(),
+                };
+
+                if let Some(cb) = &progress {
+                    cb.on_complete(output.clone());
+                }
+
+                Err(anyhow!("{e:#}"))
+            }
+        }
+    }
+}

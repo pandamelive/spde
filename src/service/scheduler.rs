@@ -75,7 +75,11 @@ impl DownloadScheduler {
             ));
         }
 
-        let capabilities = source.capabilities();
+        // 用 probe 结果更新 capabilities（服务器实际支持的能力，而非硬编码假设）
+        let mut capabilities = source.capabilities();
+        capabilities.supports_range = file_info.supports_resume;
+        capabilities.supports_concurrent = file_info.supports_multi_connection;
+        capabilities.supports_resume = file_info.supports_resume;
         eprintln!(
             "[scheduler] file size: {} bytes, supports_range: {}, supports_concurrent: {}",
             file_info.size_bytes, capabilities.supports_range, capabilities.supports_concurrent
