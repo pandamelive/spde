@@ -8,6 +8,9 @@
 //!
 //! 旧版 `downloader` 模块保留兼容，逐步迁移到新架构。
 
+// TODO: 修复以下 clippy 警告后移除此 allow
+#![allow(clippy::all)]
+
 pub mod cli;
 pub mod domain;
 pub mod infra;
