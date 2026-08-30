@@ -13,5 +13,6 @@ pub mod config;
 pub mod discover;
 pub mod history;
 pub mod manifest;
+pub mod new_download;
 pub mod paths;
 pub mod ws_client;

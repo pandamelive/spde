@@ -62,6 +62,8 @@ pub struct GlobalConfig {
     pub connections_per_file: u32,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub use_new_downloader: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +98,8 @@ pub struct TaskOverrides {
     pub dry_run: Option<bool>,
     #[serde(default)]
     pub save_path: Option<String>,
+    #[serde(default)]
+    pub use_new_downloader: Option<bool>,
 }
 
 /// 覆盖后的任务级下载参数

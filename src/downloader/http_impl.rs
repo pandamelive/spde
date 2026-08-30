@@ -284,11 +284,6 @@ async fn download_single(
     progress: Option<Arc<dyn ProgressCallback>>,
     controller: Option<Arc<DownloadController>>,
 ) -> Result<DownloadOutput> {
-    let mut output = DownloadOutput {
-        total_size,
-        ..Default::default()
-    };
-
     let deadline = task.timeout.map(|d| Instant::now() + d);
 
     // 断点续传：沿用已有本地大小（resume=false 时从零开始）
@@ -299,6 +294,13 @@ async fn download_single(
             .await
             .map(|m| m.len())
             .unwrap_or(0)
+    };
+
+    let mut output = DownloadOutput {
+        total_size,
+        // 断点续传时已下载字节从 local_size 开始，避免进度从0跳变
+        downloaded_bytes: local_size,
+        ..Default::default()
     };
 
     let mut req = client.get(&task.uri);
@@ -426,6 +428,8 @@ struct SharedState {
     last_error: Mutex<Option<String>>,
     /// 超时截止时间（None = 不限时）
     deadline: Option<Instant>,
+    /// 速度滑动窗口：(时间戳, 已下载字节)，用于计算瞬时速度
+    speed_window: Mutex<VecDeque<(Instant, u64)>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -479,6 +483,7 @@ async fn download_chunked(
         start: Instant::now(),
         last_error: Mutex::new(None),
         deadline: task.timeout.map(|d| Instant::now() + d),
+        speed_window: Mutex::new(VecDeque::new()),
     });
 
     // 启动进度报告
@@ -490,13 +495,38 @@ async fn download_chunked(
         Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(progress_interval).await;
+                let now = Instant::now();
                 let dl = progress_state.downloaded.load(Ordering::Relaxed);
                 let elapsed = progress_state.start.elapsed().as_secs_f64();
-                let speed = if elapsed > 0.0 {
-                    (dl as f64 / elapsed) as u64
+
+                // 瞬时速度：滑动窗口（最近5秒）内的字节差 / 时间差
+                let mut window = progress_state.speed_window.lock();
+                window.push_back((now, dl));
+                // 保留最近5秒的数据（至少保留2个点用于计算差值）
+                while window.len() > 2
+                    && now.duration_since(window.front().unwrap().0).as_secs_f64() > 5.0
+                {
+                    window.pop_front();
+                }
+                let speed = if window.len() >= 2 {
+                    let (t0, d0) = window.front().unwrap();
+                    let (t1, d1) = window.back().unwrap();
+                    let dt = t1.duration_since(*t0).as_secs_f64();
+                    if dt > 0.0 && *d1 >= *d0 {
+                        ((*d1 - *d0) as f64 / dt) as u64
+                    } else {
+                        0
+                    }
                 } else {
-                    0
+                    // 窗口数据不足时回退到总平均速度
+                    if elapsed > 0.0 {
+                        (dl as f64 / elapsed) as u64
+                    } else {
+                        0
+                    }
                 };
+                drop(window);
+
                 let percent = if progress_state.total_size > 0 {
                     dl as f64 / progress_state.total_size as f64 * 100.0
                 } else {

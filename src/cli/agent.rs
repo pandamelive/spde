@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -13,12 +12,10 @@ use uuid::Uuid;
 use crate::cli::config::{resolve_task_params, SpdeConfig, TaskOverrides};
 use crate::cli::discover;
 use crate::cli::history::get_or_create_node_id;
+use crate::cli::new_download;
 use crate::cli::paths::SpdePaths;
-use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
-use crate::downloader::{
-    build_default_manager, DownloadController, DownloadOutput, DownloadTask, ProgressCallback,
-    ProgressSnapshot,
-};
+use crate::cli::ws_client::WsClient;
+use crate::downloader::DownloadController;
 use pandanetos::protocol::{paths, RegisterReq, RegisterResp};
 use pandanetos::response::ApiResponse;
 
@@ -46,58 +43,7 @@ struct ClaimResp {
 /// dispatch_id → 实时速度（供 status_loop 汇总总速度）
 type ProgressMap = Arc<Mutex<HashMap<Uuid, u64>>>;
 
-/// WebSocket 进度回调：更新共享状态 + 推送进度消息给 PK
-struct WsProgress {
-    ws: WsClient,
-    dispatch_id: Uuid,
-    task_name: String,
-    progress_map: ProgressMap,
-}
-
-impl ProgressCallback for WsProgress {
-    fn on_progress(&self, s: ProgressSnapshot) {
-        // 更新共享状态（供 status_loop 汇总总速度）
-        let map = self.progress_map.clone();
-        let dispatch_id = self.dispatch_id;
-        let speed_bps = s.speed_bps;
-        tokio::spawn(async move {
-            map.lock().await.insert(dispatch_id, speed_bps);
-        });
-
-        // 推送单任务进度给 PK
-        let ws = self.ws.clone();
-        let task_name = self.task_name.clone();
-        let dispatch_id = self.dispatch_id;
-        let percent = s.percent;
-        let downloaded_bytes = s.downloaded_bytes;
-        let total_size = s.total_size;
-        let speed_bps = s.speed_bps;
-        let active_connections = s.active_connections;
-        let elapsed_secs = s.elapsed_secs;
-        tokio::spawn(async move {
-            ws.send_task_progress(TaskProgressParams {
-                dispatch_id,
-                task_name: &task_name,
-                percent,
-                downloaded_bytes,
-                total_size,
-                speed_bps,
-                active_connections,
-                elapsed_secs,
-            })
-            .await;
-        });
-    }
-
-    fn on_complete(&self, _output: DownloadOutput) {
-        // 任务完成时从共享状态移除
-        let map = self.progress_map.clone();
-        let dispatch_id = self.dispatch_id;
-        tokio::spawn(async move {
-            map.lock().await.remove(&dispatch_id);
-        });
-    }
-}
+// 旧架构的 WsProgress 进度回调已移除，全部走新架构
 
 // ── 工具函数 ─────────────────────────────────────────────
 
@@ -528,130 +474,51 @@ fn spawn_download_task(
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
-    progress_map: ProgressMap,
+    _progress_map: ProgressMap,
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<Uuid>,
 ) -> (Uuid, JoinHandle<()>, Arc<DownloadController>) {
     let dispatch_id = task.dispatch_id;
-    let task_id = Some(task.task_id);
+    let _task_id = Some(task.task_id);
     let name = task.name.clone();
     let url = task.url.clone();
     let filename = task.filename.clone();
     let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
 
     let controller = Arc::new(DownloadController::new());
-    let ctrl_clone = controller.clone();
+    let _ctrl_clone = controller.clone();
     let handle = tokio::spawn(async move {
         // ctrl_clone 即主循环持有的同一控制器：外部 cancel/pause 会立刻作用于下载器
         // permit 已在主循环中获取，这里直接持有直到任务结束
         active.fetch_add(1, Ordering::Relaxed);
 
-        // 统一调度器：所有协议自动路由
-        let mgr = build_default_manager();
-
-        let _ = tokio::fs::create_dir_all(&params.save_dir).await;
-
-        // 通知 PK 任务开始
-        ws.send_task_started(dispatch_id).await;
-
-        let file_path = params.save_dir.join(&filename);
-        log!("[download] start {} -> {:?}", name, file_path);
-        let started = Instant::now();
-
-        // connections 已在 resolve_task_params 中钳制为 >=1
-        let task = DownloadTask {
-            uri: url.clone(),
-            save_path: file_path,
-            max_conn: params.connections,
-            retry_times: params.retry,
-            dry_run: params.dry_run,
-            skip_tls_verify: params.skip_tls_verify,
-            resume: params.resume,
-            timeout: params.timeout,
-            ..Default::default()
-        };
-
-        // WS 进度回调：实时推送单任务进度 + 汇总到共享状态
-        let progress_cb: Option<Arc<dyn ProgressCallback>> = Some(Arc::new(WsProgress {
-            ws: ws.clone(),
+        // 全部使用新架构（智能下载架构）
+        log!("[download] using NEW scheduler for {} (dispatch_id={})", name, dispatch_id);
+        let result = new_download::execute_download(
+            &url,
+            &filename,
+            &params,
             dispatch_id,
-            task_name: name.clone(),
-            progress_map: progress_map.clone(),
-        }));
+            &name,
+            &ws,
+            &active,
+            &bytes_total,
+            &last_error,
+        ).await;
 
-        // 直接使用外部传入的同一控制器：外部 cancel 立即生效（替换原先内部重复创建的无用控制器）
-        let result = mgr
-            .dispatch(task, progress_cb, Some(ctrl_clone))
-            .await;
-
-        let (status, file_size, downloaded, elapsed, chunks_ok, chunks_fail, err_msg) = match result
-        {
-            Ok(o) => {
-                // 任务成功时清除 last_error
-                if o.is_success {
-                    *last_error.lock().await = None;
-                }
-                (
-                    o.status,
-                    o.total_size,
-                    o.downloaded_bytes,
-                    o.elapsed_secs,
-                    o.success_chunks as u64,
-                    o.failed_chunks as u64,
-                    o.error_msg,
-                )
+        match result {
+            Ok(r) => {
+                log!("[download] NEW scheduler done {} success={} downloaded={}MB",
+                    name, r.success, r.downloaded_bytes / 1024 / 1024);
             }
-            Err(e) => (
-                "failed".into(),
-                0,
-                0,
-                started.elapsed().as_secs_f64(),
-                0,
-                0,
-                Some(e.to_string()),
-            ),
-        };
-
-        bytes_total.fetch_add(downloaded, Ordering::Relaxed);
-        if let Some(ref e) = err_msg {
-            *last_error.lock().await = Some(e.clone());
+            Err(e) => {
+                log!("[download] NEW scheduler error for {}: {}", name, e);
+            }
         }
-
-        let avg = if elapsed > 0.0 {
-            downloaded as f64 / elapsed / 1024.0 / 1024.0
-        } else {
-            0.0
-        };
-
-        log!(
-            "[download] done {} status={} downloaded={}MB avg={:.1}MB/s",
-            name,
-            status,
-            downloaded / 1024 / 1024,
-            avg
-        );
-
-        ws.send_task_report(TaskReportParams {
-            dispatch_id: Some(dispatch_id),
-            task_id,
-            task_name: &name,
-            url: &url,
-            filename: &filename,
-            file_size,
-            downloaded_bytes: downloaded,
-            elapsed_secs: elapsed,
-            avg_speed_mbps: avg,
-            status: &status,
-            success_chunks: chunks_ok,
-            failed_chunks: chunks_fail,
-            error_msg: err_msg.as_deref(),
-        })
-        .await;
 
         active.fetch_sub(1, Ordering::Relaxed);
         drop(permit);
-        // 通知主循环清理 running 表（携带 dispatch_id）
         let _ = task_done_tx.send(dispatch_id).await;
     });
 
