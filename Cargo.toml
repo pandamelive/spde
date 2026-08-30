@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "spde"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
 license = "MIT"
