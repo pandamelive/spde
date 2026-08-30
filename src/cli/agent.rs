@@ -15,7 +15,7 @@ use crate::cli::history::get_or_create_node_id;
 use crate::cli::new_download;
 use crate::cli::paths::SpdePaths;
 use crate::cli::ws_client::WsClient;
-use crate::downloader::DownloadController;
+use crate::service::controller::DownloadController;
 use pandanetos::protocol::{paths, RegisterReq, RegisterResp};
 use pandanetos::response::ApiResponse;
 
