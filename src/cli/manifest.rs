@@ -284,7 +284,7 @@ pub fn build_node_capabilities() -> serde_json::Value {
 /// 输出说明书到 stdout（--manifest 命令使用）
 pub fn print_manifest() {
     let manifest = build_capability_manifest();
-    println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
+    println!("{}", serde_json::to_string_pretty(&manifest).unwrap()); // panda-allow: cli-output
 }
 
 fn available_cores() -> u64 {
