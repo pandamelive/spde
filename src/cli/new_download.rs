@@ -18,9 +18,17 @@ use pandanetos::domain::DownloadProgress;
 use crate::cli::config::{SpdeConfig, TaskOverrides, TaskParams};
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
 use crate::domain::DownloadConfig;
+use crate::infra::file::downloader::FileChunkDownloader;
+use crate::infra::file::source::FileSource;
+use crate::infra::ftp::downloader::FtpChunkDownloader;
+use crate::infra::ftp::source::FtpSource;
 use crate::infra::http::downloader::HttpChunkDownloader;
 use crate::infra::http::mirror::dns::DnsMultiIpDiscoverer;
 use crate::infra::http::source::HttpSource;
+use crate::infra::ssh::downloader::SshChunkDownloader;
+use crate::infra::ssh::source::SshSource;
+use crate::infra::torrent::downloader::TorrentChunkDownloader;
+use crate::infra::torrent::source::TorrentSource;
 use crate::service::adaptive::{AdaptiveConfig, AdaptiveController};
 use crate::service::scheduler::DownloadScheduler;
 
@@ -98,21 +106,63 @@ pub async fn execute_download(
     // 创建下载调度器
     let scheduler = DownloadScheduler::new(download_config);
 
-    // 注册镜像发现器（注意：register 是 async 方法，期望 Box<dyn MirrorDiscoverer>）
-    let mirror_bus = scheduler.mirror_bus();
-    mirror_bus
-        .register(Box::new(DnsMultiIpDiscoverer::new()))
-        .await;
-    // UrlRuleDiscoverer::new 返回 Arc，这里暂时用 DnsMultiIpDiscoverer 作为示例
-    // 后续可以扩展 UrlRuleDiscoverer 的构造函数，返回 Self 而不是 Arc
-    // mirror_bus.register(Box::new(UrlRuleDiscoverer::new(true, Vec::new()))).await;
+    // 协议路由：根据 URL 协议类型选择对应的 Source 和 Downloader
+    let is_file = FileSource::is_file_uri(url);
+    let is_ftp = FtpSource::is_ftp_uri(url);
+    let is_ssh = SshSource::is_ssh_uri(url);
+    let is_torrent = TorrentSource::is_torrent_uri(url);
+    let is_http = url.starts_with("http://") || url.starts_with("https://");
 
-    // 创建 HTTP 源和下载器
-    let source = HttpSource::new(url.to_string());
-    let downloader = Arc::new(HttpChunkDownloader::new(
-        params.skip_tls_verify,
-        timeout_secs,
-    ));
+    // 注册镜像发现器（仅 HTTP 协议需要，File 协议不需要）
+    let mirror_bus = scheduler.mirror_bus();
+    if is_http {
+        mirror_bus
+            .register(Box::new(DnsMultiIpDiscoverer::new()))
+            .await;
+    }
+
+    // 创建源和下载器（协议无关的 Box<dyn DownloadSource> 和 Arc<dyn ChunkDownloader>）
+    let source: Box<dyn pandanetos::domain::DownloadSource>;
+    let downloader: Arc<dyn pandanetos::domain::ChunkDownloader>;
+
+    if is_file {
+        // File 协议
+        let file_source = FileSource::from_uri(url)?;
+        source = Box::new(file_source);
+        downloader = Arc::new(FileChunkDownloader::new());
+    } else if is_ftp {
+        // FTP/FTPS 协议
+        let ftp_source = FtpSource::new(url)?;
+        source = Box::new(ftp_source);
+        downloader = Arc::new(FtpChunkDownloader::new(
+            params.skip_tls_verify,
+            timeout_secs,
+        ));
+    } else if is_ssh {
+        // SSH/SFTP/SCP 协议
+        let ssh_source = SshSource::new(url)?;
+        source = Box::new(ssh_source);
+        downloader = Arc::new(SshChunkDownloader::new(timeout_secs));
+    } else if is_torrent {
+        // BitTorrent 协议（磁力链接/种子文件）
+        let save_dir = save_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let torrent_source = TorrentSource::new(url, save_dir)?;
+        source = Box::new(torrent_source);
+        downloader = Arc::new(TorrentChunkDownloader::new(timeout_secs));
+    } else if is_http {
+        // HTTP/HTTPS 协议
+        source = Box::new(HttpSource::new(url.to_string()));
+        downloader = Arc::new(HttpChunkDownloader::new(
+            params.skip_tls_verify,
+            timeout_secs,
+        ));
+    } else {
+        // 暂不支持的协议
+        anyhow::bail!("unsupported protocol for new scheduler: {}", url);
+    }
 
     // 创建进度通道
     let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
@@ -128,6 +178,7 @@ pub async fn execute_download(
         failure_rate_threshold: 0.3,
         adjust_step: 2,
         enabled: true,
+        ..Default::default()
     };
     let _adaptive = AdaptiveController::new(adaptive_config);
 
@@ -161,7 +212,12 @@ pub async fn execute_download(
 
     // 执行下载
     let result = scheduler
-        .download(Box::new(source), downloader, save_path.clone(), progress_tx)
+        .download(
+            Box::new(source),
+            downloader,
+            save_path.clone(),
+            progress_tx,
+        )
         .await;
 
     // 等待进度转发完成（progress_rx 已经被 move 到 progress_handle 闭包中）
