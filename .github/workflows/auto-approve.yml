@@ -1,0 +1,95 @@
+name: Auto Approve
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  checks: read
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    if: github.actor == 'pandamelive'
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: 4769518
+          private-key: ${{ secrets.AUTO_APPROVE_PRIVATE_KEY }}
+          owner: pandamelive
+
+      - name: Wait for CI then approve
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          REQUIRED=("Cargo Clippy" "Cargo Format" "Cargo Test")
+
+          for attempt in $(seq 1 60); do
+            ALL_DONE=true
+            ALL_PASS=true
+
+            CHECKS=$(curl -s -H "Authorization: token $APP_TOKEN" \
+              "https://api.github.com/repos/$REPO/commits/$COMMIT_SHA/check-runs?per_page=100")
+
+            for NAME in "${REQUIRED[@]}"; do
+              STATUS=$(echo "$CHECKS" | jq -r --arg n "$NAME" '.check_runs[] | select(.name==$n) | .status' | head -1)
+              CONCLUSION=$(echo "$CHECKS" | jq -r --arg n "$NAME" '.check_runs[] | select(.name==$n) | .conclusion' | head -1)
+
+              if [ "$STATUS" != "completed" ]; then
+                ALL_DONE=false
+              elif [ "$CONCLUSION" != "success" ]; then
+                ALL_PASS=false
+                echo "Check '$NAME' conclusion: $CONCLUSION"
+              fi
+            done
+
+            if [ "$ALL_DONE" = true ]; then
+              if [ "$ALL_PASS" = true ]; then
+                echo "All CI checks passed, approving PR #$PR_NUMBER"
+                HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
+                  -H "Authorization: token $APP_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" \
+                  -d '{"event":"APPROVE","body":"Auto-approved: all CI checks passed"}')
+                cat /tmp/resp.json
+                echo ""
+                if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+                  echo "PR #$PR_NUMBER approved"
+                  sleep 5
+                  echo "Merging PR #$PR_NUMBER..."
+                  MERGE_HTTP=$(curl -s -o /tmp/merge.json -w "%{http_code}" -X PUT \
+                    -H "Authorization: token $APP_TOKEN" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/merge" \
+                    -d '{"merge_method":"merge"}')
+                  cat /tmp/merge.json
+                  echo ""
+                  if [ "$MERGE_HTTP" = "200" ]; then
+                    echo "PR #$PR_NUMBER merged successfully"
+                    exit 0
+                  else
+                    echo "::error::Merge failed HTTP $MERGE_HTTP"
+                    exit 1
+                  fi
+                else
+                  echo "::error::Approve failed HTTP $HTTP"
+                  exit 1
+                fi
+              else
+                echo "::error::CI checks failed, will not approve"
+                exit 1
+              fi
+            fi
+
+            echo "Waiting for CI... (attempt $attempt)"
+            sleep 5
+          done
+
+          echo "::error::Timeout waiting for CI (5min)"
+          exit 1

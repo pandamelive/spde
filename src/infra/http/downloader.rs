@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use pandanetos::domain::{
-    Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
+    CancellationToken, Chunk, ChunkDownloader, ChunkStats, DownloadFileInfo, DownloadSource,
 };
-use pandanetos::error::{CoreError, Result, codes};
+use pandanetos::error::{codes, CoreError, Result};
 use reqwest::Client;
 use tokio::sync::Mutex;
 
@@ -87,15 +87,9 @@ impl HttpChunkDownloader {
 
     /// 从 source 向下转型为 HttpSource
     fn as_http_source<'a>(&self, source: &'a dyn DownloadSource) -> Result<&'a HttpSource> {
-        source
-            .as_any()
-            .downcast_ref::<HttpSource>()
-            .ok_or_else(|| {
-                CoreError::InvalidParam(format!(
-                    "expected HttpSource, got {}",
-                    source.protocol()
-                ))
-            })
+        source.as_any().downcast_ref::<HttpSource>().ok_or_else(|| {
+            CoreError::InvalidParam(format!("expected HttpSource, got {}", source.protocol()))
+        })
     }
 }
 
@@ -110,17 +104,9 @@ impl ChunkDownloader for HttpChunkDownloader {
         let http_source = self.as_http_source(source)?;
         let client = self.get_client(http_source).await?;
 
-        let resp = client
-            .head(http_source.url())
-            .send()
-            .await
-            .map_err(|e| {
-                CoreError::Internal(format!(
-                    "{}: {}",
-                    codes::DOWNLOAD_CONNECTION_FAILED,
-                    e
-                ))
-            })?;
+        let resp = client.head(http_source.url()).send().await.map_err(|e| {
+            CoreError::Internal(format!("{}: {}", codes::DOWNLOAD_CONNECTION_FAILED, e))
+        })?;
 
         if !resp.status().is_success() {
             return Err(CoreError::Internal(format!(
@@ -168,11 +154,7 @@ impl ChunkDownloader for HttpChunkDownloader {
             .send()
             .await
             .map_err(|e| {
-                CoreError::Internal(format!(
-                    "{}: {}",
-                    codes::DOWNLOAD_CONNECTION_FAILED,
-                    e
-                ))
+                CoreError::Internal(format!("{}: {}", codes::DOWNLOAD_CONNECTION_FAILED, e))
             })?;
 
         let status = resp.status();
@@ -207,22 +189,14 @@ impl ChunkDownloader for HttpChunkDownloader {
                 });
             }
 
-            let data = chunk_result.map_err(|e| {
-                CoreError::Internal(format!("read stream: {e}"))
-            })?;
+            let data =
+                chunk_result.map_err(|e| CoreError::Internal(format!("read stream: {e}")))?;
 
             if !data.is_empty() {
                 let write_offset = chunk.offset + downloaded;
-                writer
-                    .write_at(write_offset, &data)
-                    .await
-                    .map_err(|e| {
-                        CoreError::Internal(format!(
-                            "{}: {}",
-                            codes::DOWNLOAD_DISK_FULL,
-                            e
-                        ))
-                    })?;
+                writer.write_at(write_offset, &data).await.map_err(|e| {
+                    CoreError::Internal(format!("{}: {}", codes::DOWNLOAD_DISK_FULL, e))
+                })?;
                 downloaded += data.len() as u64;
             }
         }

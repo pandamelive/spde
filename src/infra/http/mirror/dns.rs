@@ -51,10 +51,7 @@ impl MirrorDiscoverer for DnsMultiIpDiscoverer {
     }
 
     /// 解析域名的所有 IP，每个 IP 生成一个绑定了该 IP 的 HttpSource
-    async fn discover(
-        &self,
-        source: &dyn DownloadSource,
-    ) -> Result<Vec<Box<dyn DownloadSource>>> {
+    async fn discover(&self, source: &dyn DownloadSource) -> Result<Vec<Box<dyn DownloadSource>>> {
         // 只处理 HTTP 源
         let http_source = match source.as_any().downcast_ref::<HttpSource>() {
             Some(s) => s,
@@ -69,11 +66,10 @@ impl MirrorDiscoverer for DnsMultiIpDiscoverer {
         let (host, port) = Self::extract_host_port(http_source.url())?;
 
         // DNS 解析，获取所有 IP
-        let addrs: Vec<std::net::SocketAddr> =
-            tokio::net::lookup_host(format!("{host}:{port}"))
-                .await
-                .map_err(|e| CoreError::Internal(format!("dns resolve {host}: {e}")))?
-                .collect();
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
+            .await
+            .map_err(|e| CoreError::Internal(format!("dns resolve {host}: {e}")))?
+            .collect();
 
         if addrs.is_empty() {
             return Ok(vec![]);
@@ -104,8 +100,7 @@ mod tests {
     #[test]
     fn test_extract_host_port() {
         let (host, port) =
-            DnsMultiIpDiscoverer::extract_host_port("https://example.com:8443/file.iso")
-                .unwrap();
+            DnsMultiIpDiscoverer::extract_host_port("https://example.com:8443/file.iso").unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 8443);
 

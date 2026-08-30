@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pandanetos::domain::{
-    ChunkDownloader, ChunkSet, ChunkWriter, CancellationToken, DownloadProgress,
-    DownloadResult, DownloadSource, DownloadStrategy, SourceCapabilities,
+    CancellationToken, ChunkDownloader, ChunkSet, ChunkWriter, DownloadProgress, DownloadResult,
+    DownloadSource, DownloadStrategy, SourceCapabilities,
 };
 use pandanetos::error::Result;
 use tokio::sync::{mpsc, Mutex};
@@ -61,11 +61,7 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
         "multi_source_chunked"
     }
 
-    fn supports(
-        &self,
-        _sources: &[&dyn DownloadSource],
-        caps: &SourceCapabilities,
-    ) -> bool {
+    fn supports(&self, _sources: &[&dyn DownloadSource], caps: &SourceCapabilities) -> bool {
         caps.supports_range && caps.supports_concurrent && caps.supports_resume
     }
 
@@ -248,7 +244,10 @@ fn spawn_worker(
                 {
                     Ok(stats) => stats,
                     Err(e) => {
-                        eprintln!("[worker {}] download chunk {} failed: {}", worker_id, chunk.chunk_id, e);
+                        eprintln!(
+                            "[worker {}] download chunk {} failed: {}",
+                            worker_id, chunk.chunk_id, e
+                        );
                         pandanetos::domain::ChunkStats {
                             chunk_id: chunk.chunk_id,
                             source_id: source.identifier(),

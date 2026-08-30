@@ -80,7 +80,6 @@ impl Default for OutputConfig {
     }
 }
 
-
 /// 任务级参数覆盖（配置或主控下发，None 时回退到 global 段默认值）
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TaskOverrides {
@@ -115,7 +114,11 @@ pub struct TaskParams {
 }
 
 /// 解析任务级参数：任务覆盖优先，未覆盖项回退 global 段默认值
-pub fn resolve_task_params(overrides: &TaskOverrides, cfg: &SpdeConfig, base_dir: &Path) -> TaskParams {
+pub fn resolve_task_params(
+    overrides: &TaskOverrides,
+    cfg: &SpdeConfig,
+    base_dir: &Path,
+) -> TaskParams {
     // connections=0 时强制单连接以兼容旧配置语义
     let connections = overrides
         .connections_per_file
@@ -126,7 +129,10 @@ pub fn resolve_task_params(overrides: &TaskOverrides, cfg: &SpdeConfig, base_dir
     let skip_tls_verify = overrides
         .skip_tls_verify
         .unwrap_or(cfg.global.skip_tls_verify);
-    let save_path = overrides.save_path.as_deref().unwrap_or(&cfg.output.save_path);
+    let save_path = overrides
+        .save_path
+        .as_deref()
+        .unwrap_or(&cfg.output.save_path);
     let save_dir = resolve_save_dir(base_dir, save_path);
     let resume = cfg.global.resume;
     // 超时秒数 > 0 才生效；0 视为不限时
@@ -209,7 +215,6 @@ pub fn load_config(path: &Path) -> Result<SpdeConfig, ConfigError> {
     let cfg: SpdeConfig = serde_yaml::from_str(&content)?;
     Ok(cfg)
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,30 @@
+name: Cargo Clippy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  clippy:
+    name: Cargo Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout PandaNetOS (path dependency)
+        run: |
+          git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
+          ln -sf PandaNetOS ../pandanetos 2>/dev/null || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings

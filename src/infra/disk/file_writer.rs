@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use pandanetos::domain::{ChunkWriter, CancellationToken};
-use pandanetos::error::{Result, codes};
+use pandanetos::domain::{CancellationToken, ChunkWriter};
+use pandanetos::error::{codes, Result};
 
 /// 文件分片写入器
 pub struct FileChunkWriter {
@@ -35,9 +35,7 @@ impl FileChunkWriter {
         .await
         .map_err(|e| pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}")))?
         .map_err(|e| {
-            pandanetos::error::CoreError::Internal(format!(
-                "open file {path_for_err}: {e}",
-            ))
+            pandanetos::error::CoreError::Internal(format!("open file {path_for_err}: {e}",))
         })?;
 
         Ok(Self {
@@ -76,9 +74,7 @@ impl ChunkWriter for FileChunkWriter {
                     pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
                 })?
                 .map_err(|e| {
-                    pandanetos::error::CoreError::Internal(format!(
-                        "write_at offset={offset}: {e}"
-                    ))
+                    pandanetos::error::CoreError::Internal(format!("write_at offset={offset}: {e}"))
                 })?;
         }
 
@@ -98,12 +94,8 @@ impl ChunkWriter for FileChunkWriter {
         let file = self.file.clone();
         tokio::task::spawn_blocking(move || file.sync_all())
             .await
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
-            })?
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("sync_all: {e}"))
-            })?;
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}")))?
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("sync_all: {e}")))?;
         Ok(())
     }
 
@@ -115,13 +107,9 @@ impl ChunkWriter for FileChunkWriter {
         let file = self.file.clone();
         tokio::task::spawn_blocking(move || file.set_len(size))
             .await
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}")))?
             .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
-            })?
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!(
-                    "preallocate size={size}: {e}"
-                ))
+                pandanetos::error::CoreError::Internal(format!("preallocate size={size}: {e}"))
             })?;
         Ok(())
     }
@@ -131,12 +119,8 @@ impl ChunkWriter for FileChunkWriter {
         let file = self.file.clone();
         let metadata = tokio::task::spawn_blocking(move || file.metadata())
             .await
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
-            })?
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("metadata: {e}"))
-            })?;
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}")))?
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("metadata: {e}")))?;
         Ok(metadata.len())
     }
 }

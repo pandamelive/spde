@@ -50,10 +50,7 @@ pub struct ProgressSmoother {
 
 impl ProgressSmoother {
     /// 创建一个新的进度平滑器
-    pub fn new(
-        total_bytes: u64,
-        progress_tx: mpsc::Sender<DownloadProgress>,
-    ) -> Self {
+    pub fn new(total_bytes: u64, progress_tx: mpsc::Sender<DownloadProgress>) -> Self {
         Self {
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             total_bytes,
@@ -124,8 +121,12 @@ impl ProgressSmoother {
         // 计算每个采样间隔的速度
         let mut speeds: Vec<u64> = Vec::new();
         for i in 1..history.len() {
-            let dt = history[i].timestamp.duration_since(history[i - 1].timestamp);
-            let db = history[i].downloaded_bytes.saturating_sub(history[i - 1].downloaded_bytes);
+            let dt = history[i]
+                .timestamp
+                .duration_since(history[i - 1].timestamp);
+            let db = history[i]
+                .downloaded_bytes
+                .saturating_sub(history[i - 1].downloaded_bytes);
             if dt.as_secs_f64() > 0.0 {
                 speeds.push((db as f64 / dt.as_secs_f64()) as u64);
             }

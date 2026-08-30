@@ -211,8 +211,12 @@ impl AdaptiveController {
         let failure_rate = self.failure_rate();
 
         // 1. 失败率过高，减少连接
-        if failure_rate > self.config.failure_rate_threshold && current > self.config.min_connections {
-            let new_conn = current.saturating_sub(self.config.adjust_step).max(self.config.min_connections);
+        if failure_rate > self.config.failure_rate_threshold
+            && current > self.config.min_connections
+        {
+            let new_conn = current
+                .saturating_sub(self.config.adjust_step)
+                .max(self.config.min_connections);
             self.current_connections.store(new_conn, Ordering::Relaxed);
             self.stagnation_count.store(0, Ordering::Relaxed);
             warn!(
@@ -292,7 +296,9 @@ impl AdaptiveController {
 
         info!(
             "自适应控制启动: 初始连接={}, 最大={}, 调整间隔={}s",
-            self.config.initial_connections, self.config.max_connections, self.config.adjust_interval_secs
+            self.config.initial_connections,
+            self.config.max_connections,
+            self.config.adjust_interval_secs
         );
 
         loop {

@@ -95,18 +95,17 @@ impl MirrorBus {
         // 验证每个镜像的可用性（probe）
         let mut verified: Vec<Box<dyn DownloadSource>> = Vec::new();
         for mirror in all_sources {
-            match self.verify_source(mirror.as_ref(), downloader, expected_size).await {
+            match self
+                .verify_source(mirror.as_ref(), downloader, expected_size)
+                .await
+            {
                 Ok(info) => {
                     if info.size_bytes == expected_size || expected_size == 0 {
                         verified.push(mirror);
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[mirror] verify {} failed: {}",
-                        mirror.display_name(),
-                        e
-                    );
+                    eprintln!("[mirror] verify {} failed: {}", mirror.display_name(), e);
                 }
             }
         }
@@ -127,11 +126,9 @@ impl MirrorBus {
         _expected_size: u64,
     ) -> Result<DownloadFileInfo> {
         // probe 有超时风险，用 tokio::time::timeout 包装
-        let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            downloader.probe(source),
-        )
-        .await;
+        let probe_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), downloader.probe(source))
+                .await;
 
         match probe_result {
             Ok(Ok(info)) => Ok(info),
@@ -161,7 +158,9 @@ fn clone_source(source: &dyn DownloadSource) -> Box<dyn DownloadSource> {
     // 因为 HttpSource 实现了 Clone，这里用 as_any 向下转型
     // 注意：这要求所有 DownloadSource 实现都派生 Clone
     // 更完善的方案是在 trait 中加 fn clone_box(&self) -> Box<dyn DownloadSource>
-    if let Some(http) = source.as_any().downcast_ref::<crate::infra::http::source::HttpSource>()
+    if let Some(http) = source
+        .as_any()
+        .downcast_ref::<crate::infra::http::source::HttpSource>()
     {
         return Box::new(http.clone());
     }

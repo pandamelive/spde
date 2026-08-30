@@ -295,7 +295,9 @@ async fn connection_loop(
     }
 }
 
-async fn connect_ws(ws_url: &str) -> Result<
+async fn connect_ws(
+    ws_url: &str,
+) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     // 直接传 URL，tungstenite 自动构建完整握手请求（含 Sec-WebSocket-Key）

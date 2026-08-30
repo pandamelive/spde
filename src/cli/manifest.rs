@@ -13,7 +13,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 支持的全部协议（随编译特性变化）
 fn supported_protocols() -> Vec<String> {
     [
-        "http", "https", "ssh", "sftp", "file",
+        "http",
+        "https",
+        "ssh",
+        "sftp",
+        "file",
         #[cfg(feature = "ftp")]
         "ftp",
         #[cfg(feature = "torrent")]
@@ -97,10 +101,19 @@ pub fn build_capability_manifest() -> serde_json::Value {
             ("controller".to_string(), true),
         ]),
         hardware: BTreeMap::from([
-            ("cpu_cores".to_string(), serde_json::json!(available_cores())),
+            (
+                "cpu_cores".to_string(),
+                serde_json::json!(available_cores()),
+            ),
             ("os".to_string(), serde_json::json!(std::env::consts::OS)),
-            ("arch".to_string(), serde_json::json!(std::env::consts::ARCH)),
-            ("family".to_string(), serde_json::json!(std::env::consts::FAMILY)),
+            (
+                "arch".to_string(),
+                serde_json::json!(std::env::consts::ARCH),
+            ),
+            (
+                "family".to_string(),
+                serde_json::json!(std::env::consts::FAMILY),
+            ),
         ]),
         compile_features: compile_features(),
     };
@@ -133,7 +146,14 @@ pub fn build_capability_manifest() -> serde_json::Value {
         ),
         (
             "global.timeout".to_string(),
-            ConfigurableParam::number("u32", 1800.0, Some(10.0), None, Some("seconds"), "任务超时时间"),
+            ConfigurableParam::number(
+                "u32",
+                1800.0,
+                Some(10.0),
+                None,
+                Some("seconds"),
+                "任务超时时间",
+            ),
         ),
         (
             "global.skip_tls_verify".to_string(),
@@ -198,15 +218,29 @@ pub fn build_capability_manifest() -> serde_json::Value {
     // ── 状态上报字段 ──
     let status_report = StatusReport {
         node_level: [
-            "node_id", "hostname", "platform", "arch", "version", "status", "active_tasks",
-            "bytes_downloaded", "total_speed_bps",
+            "node_id",
+            "hostname",
+            "platform",
+            "arch",
+            "version",
+            "status",
+            "active_tasks",
+            "bytes_downloaded",
+            "total_speed_bps",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect(),
         task_level: [
-            "dispatch_id", "task_name", "percent", "speed_bps", "downloaded_bytes", "total_size",
-            "active_connections", "status", "error_message",
+            "dispatch_id",
+            "task_name",
+            "percent",
+            "speed_bps",
+            "downloaded_bytes",
+            "total_size",
+            "active_connections",
+            "status",
+            "error_message",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -250,12 +284,18 @@ fn build_info_from_env() -> BuildInfo {
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|| "unknown".to_string());
     BuildInfo {
-        rust_version: option_env!("RUSTC_VERSION").unwrap_or("unknown").to_string(),
-        build_profile: option_env!("BUILD_PROFILE").unwrap_or("unknown").to_string(),
+        rust_version: option_env!("RUSTC_VERSION")
+            .unwrap_or("unknown")
+            .to_string(),
+        build_profile: option_env!("BUILD_PROFILE")
+            .unwrap_or("unknown")
+            .to_string(),
         build_time,
         git_commit: option_env!("GIT_COMMIT").unwrap_or("unknown").to_string(),
         git_branch: option_env!("GIT_BRANCH").unwrap_or("unknown").to_string(),
-        target_triple: option_env!("TARGET_TRIPLE").unwrap_or("unknown").to_string(),
+        target_triple: option_env!("TARGET_TRIPLE")
+            .unwrap_or("unknown")
+            .to_string(),
     }
 }
 
@@ -267,9 +307,15 @@ pub fn build_node_capabilities() -> serde_json::Value {
     let mut caps = build_capability_manifest();
     if let Some(obj) = caps.as_object_mut() {
         // 旧版 PK 展示层透传使用的兼容别名（pk 对未知字段不做解析）
-        obj.insert("supported_protocols".to_string(), serde_json::json!(supported_protocols()));
+        obj.insert(
+            "supported_protocols".to_string(),
+            serde_json::json!(supported_protocols()),
+        );
         obj.insert("uri_formats".to_string(), serde_json::json!(uri_formats()));
-        obj.insert("run_modes".to_string(), serde_json::json!(["agent", "standalone", "cli"]));
+        obj.insert(
+            "run_modes".to_string(),
+            serde_json::json!(["agent", "standalone", "cli"]),
+        );
         obj.insert(
             "compile_features".to_string(),
             serde_json::json!({

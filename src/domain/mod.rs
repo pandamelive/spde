@@ -5,9 +5,9 @@
 //! 本模块放置 spde 特有的领域模型和扩展。
 
 pub use pandanetos::domain::{
-    Chunk, ChunkDownloader, ChunkSet, ChunkState, ChunkStats, ChunkWriter,
-    CancellationToken, DownloadFileInfo, DownloadProgress, DownloadResult, DownloadSource,
-    DownloadStrategy, MirrorDiscoverer, SourceCapabilities, SourceHealth,
+    CancellationToken, Chunk, ChunkDownloader, ChunkSet, ChunkState, ChunkStats, ChunkWriter,
+    DownloadFileInfo, DownloadProgress, DownloadResult, DownloadSource, DownloadStrategy,
+    MirrorDiscoverer, SourceCapabilities, SourceHealth,
 };
 
 /// 下载任务配置（spde 特有的任务级参数）
