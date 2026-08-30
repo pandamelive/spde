@@ -1,6 +1,7 @@
 [workspace]
 members = ["."]
 resolver = "2"
+exclude = ["PandaNetOS"]
 
 [package]
 name = "spde"
