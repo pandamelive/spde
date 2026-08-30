@@ -6,14 +6,13 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, anyhow};
-use pandanetos::error::{CoreError, Result};
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use suppaftp::{FtpStream, NativeTlsConnector};
-
 use pandanetos::domain::{
     Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
 };
+use pandanetos::error::{CoreError, Result};
+use suppaftp::{FtpStream, NativeTlsConnector};
 
 use super::source::FtpSource;
 

@@ -6,16 +6,17 @@
 //! 注意：由于通过系统命令实现，不支持分片下载和多连接并发。
 //! 调度器会用单分片下载整个文件（chunk_size = file_size）。
 
+use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, anyhow};
-use pandanetos::error::{CoreError, Result};
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use tokio::process::Command;
-
 use pandanetos::domain::{
     Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
 };
+use pandanetos::error::{CoreError, Result};
+use russh_sftp::client::SftpSession;
+use tokio::net::TcpStream;
 
 use super::source::SshSource;
 

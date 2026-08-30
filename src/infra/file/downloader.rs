@@ -6,15 +6,14 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, anyhow};
-use pandanetos::error::{CoreError, Result};
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-
 use pandanetos::domain::{
     Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
 };
+use pandanetos::error::{CoreError, Result};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 use super::source::FileSource;
 
@@ -47,7 +46,10 @@ impl ChunkDownloader for FileChunkDownloader {
             .with_context(|| format!("failed to stat file: {:?}", file_source.path()))?;
 
         if !metadata.is_file() {
-            return Err(CoreError::External(anyhow!("source is not a regular file: {:?}", file_source.path())));
+            return Err(CoreError::External(anyhow!(
+                "source is not a regular file: {:?}",
+                file_source.path()
+            )));
         }
 
         Ok(DownloadFileInfo {

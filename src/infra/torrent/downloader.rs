@@ -8,14 +8,12 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, anyhow};
-use pandanetos::error::{CoreError, Result};
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-
 use pandanetos::domain::{
     Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
 };
-
+use pandanetos::error::{CoreError, Result};
 use super::source::{TorrentSource, TorrentSourceType};
 
 /// BitTorrent 分片下载器
