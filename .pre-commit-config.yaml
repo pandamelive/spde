@@ -1,0 +1,73 @@
+# =============================================================================
+# PandaNetOS 生态 pre-commit 钩子配置
+# =============================================================================
+# 放在各项目根目录: .pre-commit-config.yaml
+#
+# 安装：
+#   pip install pre-commit
+#   pre-commit install
+#
+# 作用：本地 git commit 时自动运行检查，提前发现问题，避免 CI 失败。
+# 注意：pre-commit 可被 --no-verify 绕过，最终防线是 CI + 分支保护。
+# =============================================================================
+
+repos:
+  # ===========================================================================
+  # 本地钩子：PandaNetOS 合规检查
+  # ===========================================================================
+  - repo: local
+    hooks:
+      - id: pandanetos-compliance
+        name: PandaNetOS 合规检查（标准库依赖 / README规范 / 敏感信息）
+        entry: bash ../PandaNetOS/scripts/check_compliance.sh .
+        language: system
+        pass_filenames: false
+        stages: [commit]
+        verbose: true
+
+      - id: cargo-fmt
+        name: Cargo 格式化
+        entry: cargo fmt --all
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+      - id: cargo-clippy
+        name: Cargo Clippy（警告视为错误）
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+      - id: no-forbidden-macros
+        name: 禁止 println!/dbg!/todo! 提交
+        entry: bash -c '! grep -rn --include="*.rs" -E "\b(println!|dbg!|todo!|unimplemented!)\(" src/'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+      - id: no-hardcoded-secrets
+        name: 禁止硬编码敏感信息
+        entry: bash -c '! grep -rn --include="*.rs" --include="*.yaml" --include="*.yml" -E "(token|password|api_key|secret)\s*=\s*\"[a-zA-Z0-9_-]{8,}\"" src/ Cargo.toml *.yaml *.yml 2>/dev/null | grep -vE "\"\"|null|placeholder|example|your_"'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+      - id: readme-path-convention
+        name: README 必须包含标准库路径约定
+        entry: bash -c 'grep -q "标准库路径约定" README.md && grep -q "path = \"../PandaNetOS/crates/pandanetos\"" README.md'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+  # ===========================================================================
+  # 通用钩子：文件末尾换行、尾随空格
+  # ===========================================================================
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

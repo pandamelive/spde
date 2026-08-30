@@ -18,6 +18,29 @@ SPDE（Super Download Engine）是 **PandaNetOS 生态**的核心下载组件。
 | 配置标准 | 遵循 PandaNetOS 配置规范，与生态各组件对齐 |
 | 标准一致性 | 节点注册、任务领取、心跳、状态上报端点与《PandaNetOS 标准规范》严格一致 |
 
+### 标准库路径约定
+
+本项目强制依赖生态共享标准库 `pandanetos`，使用 **path 依赖**，目录布局固定：
+
+```
+<workspace>/
+├── PandaNetOS/              # 标准库仓库（必须与 spde 同级）
+│   └── crates/pandanetos/
+└── spde/                    # 本仓库
+    └── Cargo.toml           # pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
+```
+
+`Cargo.toml` 中的依赖声明：
+
+```toml
+[dependencies]
+pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
+```
+
+> 克隆本仓库后，需同时克隆 `PandaNetOS/PandaNetOS` 到同级目录，否则 `cargo build` 会因找不到 path 依赖而失败。
+>
+> CI 发布构建时由 GitHub Actions 自动 checkout 标准库并修正路径，见 `.github/workflows/release.yml`。
+
 ### 构建信息注入（能力清单标准 3.1）
 
 编译期自动注入统一构建信息，随 Capability Manifest 输出：
