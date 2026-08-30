@@ -1,151 +1,43 @@
-name: Release SPDE
+name: Release Build
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v1.1.2)'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: spde-x86_64-windows.exe
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            artifact: spde-x86_64-linux-musl
-            cross: true
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            artifact: spde-aarch64-linux-musl
-            cross: true
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: spde-x86_64-macos
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: spde-aarch64-macos
-
-    runs-on: ${{ matrix.os }}
-
+  build-windows:
+    runs-on: windows-latest
     steps:
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout PandaNetOS
-        uses: actions/checkout@v4
-        with:
-          repository: PandaNetOS/PandaNetOS
-          path: PandaNetOS
-
-      - name: Move PandaNetOS to parent directory
+      - name: Checkout PandaNetOS standard library
         shell: bash
-        run: mv PandaNetOS ../PandaNetOS
+        run: |
+          git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install sccache (non-cross targets)
-        if: ${{ !matrix.cross }}
-        uses: mozilla-actions/sccache-action@v0.0.6
-
-      - name: Cache sccache (local disk, non-cross)
-        if: ${{ !matrix.cross }}
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/sccache
-            ~/Library/Caches/Mozilla.sccache
-            ~/AppData/Local/Mozilla/sccache/cache
-          key: sccache-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            sccache-${{ matrix.target }}-
-
-      - name: Cache Rust build
+      - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
-      - name: Install cross (Linux musl targets)
-        if: matrix.cross
-        uses: taiki-e/install-action@cross
+      - name: Build release binary
+        run: cargo build --release
 
-      - name: Setup perl for Windows (vendored OpenSSL)
-        if: matrix.os == 'windows-latest'
-        uses: shogo82148/actions-setup-perl@v1
-        with:
-          perl-version: '5.36'
-
-      - name: Build with cross (Linux musl)
-        if: matrix.cross
-        shell: bash
-        run: |
-          cp -r ../PandaNetOS ./PandaNetOS
-          sed -i 's|../PandaNetOS|PandaNetOS|g' Cargo.toml
-          cross build --release --target ${{ matrix.target }}
-
-      - name: Build with sccache (Windows/macOS)
-        if: ${{ !matrix.cross }}
-        env:
-          RUSTC_WRAPPER: sccache
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package binary (filename includes version)
-        id: package
-        shell: bash
-        run: |
-          VERSION="${{ github.ref_name }}"
-          bin="target/${{ matrix.target }}/release/spde"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            bin="${bin}.exe"
-          fi
-          # 文件名带版本号: spde-v1.0-x86_64-linux-musl
-          artifact_name="spde-${VERSION}-$(echo '${{ matrix.artifact }}' | sed 's/^spde-//')"
-          cp "$bin" "$artifact_name"
-          if [ "${{ matrix.os }}" != "windows-latest" ]; then
-            chmod +x "$artifact_name"
-          fi
-          echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
-          echo "Packaged: $artifact_name"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}
-          path: ${{ steps.package.outputs.artifact_name }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-
-      - name: Create GitHub Release
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: SPDE ${{ github.ref_name }}
-          generate_release_notes: true
-          files: spde-v*
-
-  dispatch-pcdn-keeper:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger pcdn-keeper image rebuild
-        run: |
-          curl -sS -X POST \
-            -H "Authorization: token ${{ secrets.PAT_FOR_PCDNKEEPER }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/pandamelive/pcdn-keeper/dispatches \
-            -d '{"event_type":"upstream-release","client_payload":{"upstream":"spde","version":"${{ github.ref_name }}"}}'
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: target/release/${{ github.event.repository.name }}.exe
+          fail_on_unmatched_files: true
