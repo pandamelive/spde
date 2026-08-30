@@ -5,11 +5,27 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 
+use pandanetos::domain::{ChunkDownloader, DownloadProgress, DownloadSource};
 use spde::cli::config::{load_config, resolve_task_params, SpdeConfig};
 use spde::cli::paths::SpdePaths;
-use spde::{build_default_manager, DownloadTask, ProgressCallback, StderrProgress};
+use spde::infra::file::downloader::FileChunkDownloader;
+use spde::infra::file::source::FileSource;
+#[cfg(feature = "ftp")]
+use spde::infra::ftp::downloader::FtpChunkDownloader;
+#[cfg(feature = "ftp")]
+use spde::infra::ftp::source::FtpSource;
+use spde::infra::http::downloader::HttpChunkDownloader;
+use spde::infra::http::mirror::dns::DnsMultiIpDiscoverer;
+use spde::infra::http::source::HttpSource;
+use spde::infra::ssh::downloader::SshChunkDownloader;
+use spde::infra::ssh::source::SshSource;
+#[cfg(feature = "torrent")]
+use spde::infra::torrent::downloader::TorrentChunkDownloader;
+#[cfg(feature = "torrent")]
+use spde::infra::torrent::source::TorrentSource;
+use spde::service::scheduler::{DownloadConfig, DownloadScheduler};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -39,6 +55,62 @@ pub enum SubCommand {
     Stats,
 }
 
+/// 根据 URL 协议类型创建对应的 Source 和 Downloader
+fn create_source_and_downloader(
+    url: &str,
+    save_path: &PathBuf,
+    skip_tls_verify: bool,
+    timeout_secs: u64,
+) -> Result<(Box<dyn DownloadSource>, Arc<dyn ChunkDownloader>)> {
+    if FileSource::is_file_uri(url) {
+        let source = FileSource::from_uri(url)?;
+        Ok((Box::new(source), Arc::new(FileChunkDownloader::new())))
+    } else if url.starts_with("http://") || url.starts_with("https://") {
+        Ok((
+            Box::new(HttpSource::new(url.to_string())),
+            Arc::new(HttpChunkDownloader::new(skip_tls_verify, timeout_secs)),
+        ))
+    } else if FtpSource::is_ftp_uri(url) {
+        #[cfg(feature = "ftp")]
+        {
+            let source = FtpSource::new(url)?;
+            Ok((
+                Box::new(source),
+                Arc::new(FtpChunkDownloader::new(skip_tls_verify, timeout_secs)),
+            ))
+        }
+        #[cfg(not(feature = "ftp"))]
+        {
+            anyhow::bail!("ftp support not compiled in, rebuild with --features ftp")
+        }
+    } else if SshSource::is_ssh_uri(url) {
+        let source = SshSource::new(url)?;
+        Ok((
+            Box::new(source),
+            Arc::new(SshChunkDownloader::new(timeout_secs)),
+        ))
+    } else if TorrentSource::is_torrent_uri(url) {
+        #[cfg(feature = "torrent")]
+        {
+            let save_dir = save_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let source = TorrentSource::new(url, save_dir)?;
+            Ok((
+                Box::new(source),
+                Arc::new(TorrentChunkDownloader::new(timeout_secs)),
+            ))
+        }
+        #[cfg(not(feature = "torrent"))]
+        {
+            anyhow::bail!("torrent support not compiled in, rebuild with --features torrent")
+        }
+    } else {
+        anyhow::bail!("unsupported protocol: {}", url)
+    }
+}
+
 async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     eprintln!("serve starting ...");
     eprintln!("base_dir: {:?}", paths.base_dir);
@@ -58,8 +130,24 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     }
 
     // 统一调度器：所有协议（HTTP/FTP/SFTP/BT/本地文件）自动路由
-    let mgr = Arc::new(build_default_manager());
-    eprintln!("registered backends: {:?}", mgr.backend_names());
+    let scheduler_config = DownloadConfig {
+        max_connections: cfg.global.connections_per_file,
+        chunk_size: 4 * 1024 * 1024, // 4MB 默认分片大小
+        enable_mirror_discovery: true,
+        enable_adaptive: true,
+        enable_cdn_throttle_detection: true,
+    };
+    let scheduler = Arc::new(DownloadScheduler::new(scheduler_config));
+
+    // 注册镜像发现器（HTTP 专用）
+    let mirror_bus = scheduler.mirror_bus();
+    mirror_bus
+        .register(Box::new(DnsMultiIpDiscoverer::new()))
+        .await;
+    eprintln!(
+        "scheduler initialized: max_connections={}",
+        scheduler_config.max_connections
+    );
 
     // 输出目录：绝对路径直接用，相对路径基于 base_dir
     let save_dir = PathBuf::from(&cfg.output.save_path);
@@ -74,13 +162,6 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     eprintln!("save dir: {:?}", save_dir);
 
     let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent.max(1) as usize));
-    let cfg_proxy = if !cfg.proxy.https_proxy.trim().is_empty() {
-        cfg.proxy.https_proxy.clone()
-    } else if !cfg.proxy.http_proxy.trim().is_empty() {
-        cfg.proxy.http_proxy.clone()
-    } else {
-        String::new()
-    };
 
     let overall_start = Instant::now();
     let history_file = paths.run_history_file.clone();
@@ -111,46 +192,75 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         let url = task_cfg.url.clone();
         let filename = task_cfg.filename.clone();
         let file_path = params.save_dir.join(&task_cfg.filename);
-        let connections = params.connections;
-        let retry = params.retry;
-        let dry_run = params.dry_run;
         let skip_tls_verify = params.skip_tls_verify;
-        let proxy = cfg_proxy.clone();
-        let mgr = mgr.clone();
+        let timeout_secs = params.timeout.map(|d| d.as_secs()).unwrap_or(30);
 
+        let scheduler = scheduler.clone();
         let handle = tokio::spawn(async move {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
-            // connections 已在 resolve_task_params 中钳制为 >=1
-            let task = DownloadTask {
-                uri: url.clone(),
-                save_path: file_path,
-                max_conn: connections,
-                retry_times: retry,
-                dry_run,
+            // 根据 URL 协议类型创建对应的 Source 和 Downloader
+            let (source, downloader) = match create_source_and_downloader(
+                &url,
+                &file_path,
                 skip_tls_verify,
-                proxy,
-                resume: params.resume,
-                timeout: params.timeout,
-                ..Default::default()
+                timeout_secs,
+            ) {
+                Ok(sd) => sd,
+                Err(e) => {
+                    eprintln!("[error] {}: create source failed: {:#}", name, e);
+                    return (name, url, filename, Err(e));
+                }
             };
 
-            let progress: Option<Arc<dyn ProgressCallback>> =
-                Some(Arc::new(StderrProgress::new(name.clone())));
+            // 创建进度汇报通道
+            let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+            let progress_name = name.clone();
+            tokio::spawn(async move {
+                while let Some(progress) = progress_rx.recv().await {
+                    let percent = if progress.total_bytes > 0 {
+                        progress.downloaded_bytes as f64 / progress.total_bytes as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+                    let speed_mbps = progress.speed_bps as f64 / 1024.0 / 1024.0;
+                    eprintln!(
+                        "[progress] {}: {:.1}% ({}/{} MB) {:.2} MB/s",
+                        progress_name,
+                        percent,
+                        progress.downloaded_bytes / 1024 / 1024,
+                        progress.total_bytes / 1024 / 1024,
+                        speed_mbps
+                    );
+                }
+            });
 
-            let result = mgr.dispatch(task, progress, None).await;
+            // 执行下载
+            let result = scheduler
+                .download(source, downloader, file_path.clone(), progress_tx)
+                .await;
             drop(permit);
 
             match result {
-                Ok(o) => {
+                Ok(r) => {
                     eprintln!(
-                        "[done] {}  downloaded={}MB  chunks ok={} fail={}",
+                        "[done] {}  downloaded={}MB",
                         name,
-                        o.downloaded_bytes / 1024 / 1024,
-                        o.success_chunks,
-                        o.failed_chunks
+                        r.downloaded_bytes / 1024 / 1024,
                     );
-                    (name, url, filename, Ok(o))
+                    // 转换为旧格式的输出（兼容后续统计和历史记录）
+                    let output = json!({
+                        "total_size": r.total_bytes,
+                        "downloaded_bytes": r.downloaded_bytes,
+                        "elapsed_secs": r.elapsed_secs,
+                        "avg_speed_mbps": if r.elapsed_secs > 0.0 { r.downloaded_bytes as f64 / r.elapsed_secs / 1024.0 / 1024.0 } else { 0.0 },
+                        "status": if r.success { "success" } else { "failed" },
+                        "is_success": r.success,
+                        "success_chunks": 0,
+                        "failed_chunks": 0,
+                        "error_msg": null
+                    });
+                    (name, url, filename, Ok(output))
                 }
                 Err(e) => {
                     eprintln!("[error] {}: {:#}", name, e);
@@ -171,8 +281,16 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             let timestamp = pandanetos::time::now_rfc3339();
             let record = match result {
                 Ok(o) => {
-                    total_bytes += o.downloaded_bytes;
-                    if o.status == "failed" || !o.is_success {
+                    let downloaded = o
+                        .get("downloaded_bytes")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let status = o
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    total_bytes += downloaded;
+                    if status == "failed" {
                         fail_count += 1;
                     } else {
                         success_count += 1;
@@ -182,14 +300,14 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                         "task_name": name,
                         "url": url,
                         "filename": filename,
-                        "file_size": o.total_size,
-                        "downloaded_bytes": o.downloaded_bytes,
-                        "elapsed_secs": o.elapsed_secs,
-                        "avg_speed_mbps": o.avg_speed_mbps,
-                        "status": o.status,
-                        "success_chunks": o.success_chunks,
-                        "failed_chunks": o.failed_chunks,
-                        "error_msg": o.error_msg
+                        "file_size": o.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "downloaded_bytes": downloaded,
+                        "elapsed_secs": o.get("elapsed_secs").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        "avg_speed_mbps": o.get("avg_speed_mbps").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        "status": status,
+                        "success_chunks": o.get("success_chunks").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "failed_chunks": o.get("failed_chunks").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "error_msg": o.get("error_msg").and_then(|v| v.as_str())
                     })
                 }
                 Err(e) => {
@@ -235,11 +353,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     let elapsed = overall_start.elapsed().as_secs_f64();
     let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
-    let avg_speed = if elapsed > 0.0 {
-        total_mb / elapsed
-    } else {
-        0.0
-    };
+    let avg_speed = if elapsed > 0.0 { total_mb / elapsed } else { 0.0 };
 
     eprintln!();
     eprintln!("========== 下载汇总 ==========");
@@ -273,8 +387,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = SpdePaths::from_exe_side()?;
     eprintln!("spde work root: {:?}", paths.base_dir);
-    paths.check_and_prepare().context("初始化目录文件失败")?;
-    paths.verify_integrity().context("目录文件完整性校验失败")?;
+    paths
+        .check_and_prepare()
+        .context("初始化目录文件失败")?;
+    paths
+        .verify_integrity()
+        .context("目录文件完整性校验失败")?;
 
     match cli.cmd {
         SubCommand::Manifest => {
@@ -312,6 +430,7 @@ async fn main() -> Result<()> {
             print_stats(&paths).await?;
         }
     }
+
     Ok(())
 }
 
@@ -406,5 +525,6 @@ async fn print_stats(paths: &SpdePaths) -> Result<()> {
             eprintln!("  {}  {}  {}  {:.1} MB", ts, status, name, mb);
         }
     }
+
     Ok(())
 }

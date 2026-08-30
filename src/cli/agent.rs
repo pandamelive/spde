@@ -15,7 +15,7 @@ use crate::cli::history::get_or_create_node_id;
 use crate::cli::new_download;
 use crate::cli::paths::SpdePaths;
 use crate::cli::ws_client::WsClient;
-use crate::downloader::DownloadController;
+use crate::service::controller::DownloadController;
 use pandanetos::protocol::{paths, RegisterReq, RegisterResp};
 use pandanetos::response::ApiResponse;
 
@@ -325,10 +325,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
         // 清理已完成任务（running 表只增不减会累积 JoinHandle/锁/句柄）
         while let Ok(done_id) = task_done_rx.try_recv() {
             if running.lock().await.remove(&done_id).is_some() {
-                log!(
-                    "[agent] task {} finished, removed from running table",
-                    done_id
-                );
+                log!("[agent] task {} finished, removed from running table", done_id);
             }
         }
 
@@ -497,11 +494,7 @@ fn spawn_download_task(
         active.fetch_add(1, Ordering::Relaxed);
 
         // 全部使用新架构（智能下载架构）
-        log!(
-            "[download] using NEW scheduler for {} (dispatch_id={})",
-            name,
-            dispatch_id
-        );
+        log!("[download] using NEW scheduler for {} (dispatch_id={})", name, dispatch_id);
         let result = new_download::execute_download(
             &url,
             &filename,
@@ -512,17 +505,12 @@ fn spawn_download_task(
             &active,
             &bytes_total,
             &last_error,
-        )
-        .await;
+        ).await;
 
         match result {
             Ok(r) => {
-                log!(
-                    "[download] NEW scheduler done {} success={} downloaded={}MB",
-                    name,
-                    r.success,
-                    r.downloaded_bytes / 1024 / 1024
-                );
+                log!("[download] NEW scheduler done {} success={} downloaded={}MB",
+                    name, r.success, r.downloaded_bytes / 1024 / 1024);
             }
             Err(e) => {
                 log!("[download] NEW scheduler error for {}: {}", name, e);

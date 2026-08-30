@@ -78,10 +78,33 @@ impl ChunkWriter for FileChunkWriter {
                 })?;
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            // 非 Unix 平台回退到 seek + write（用 Mutex 保护）
-            // 实际实现略，spde 主要运行在 Linux 上
+            use std::os::windows::fs::FileExt;
+            let file = self.file.clone();
+            let buf = Bytes::copy_from_slice(data);
+            tokio::task::spawn_blocking(move || {
+                let mut written = 0u64;
+                while written < buf.len() as u64 {
+                    match file.seek_write(&buf[written as usize..], offset + written) {
+                        Ok(0) => break,
+                        Ok(n) => written += n as u64,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| {
+                pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
+            })?
+            .map_err(|e| {
+                pandanetos::error::CoreError::Internal(format!("seek_write offset={offset}: {e}"))
+            })?;
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
             let _ = offset;
             let _ = data;
         }
