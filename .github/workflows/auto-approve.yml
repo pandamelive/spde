@@ -7,6 +7,7 @@ on:
 permissions:
   pull-requests: write
   checks: read
+  contents: write
 
 jobs:
   auto-approve:
@@ -21,75 +22,119 @@ jobs:
           private-key: ${{ secrets.AUTO_APPROVE_PRIVATE_KEY }}
           owner: pandamelive
 
-      - name: Wait for CI then approve
+      - name: Wait for all checks then approve and merge
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
         run: |
-          REQUIRED=("Cargo Clippy" "Cargo Format" "Cargo Test")
+          # Auto-approve runs LAST: dynamically wait for ALL other check runs to complete.
+          # Excludes self (auto-approve / Auto Approve) to avoid deadlock.
+          SELF_NAMES=("auto-approve" "Auto Approve")
 
-          for attempt in $(seq 1 60); do
-            ALL_DONE=true
-            ALL_PASS=true
+          is_self() {
+            local name="$1"
+            for s in "${SELF_NAMES[@]}"; do
+              [ "$name" = "$s" ] && return 0
+            done
+            return 1
+          }
 
+          for attempt in $(seq 1 120); do
             CHECKS=$(curl -s -H "Authorization: token $APP_TOKEN" \
               "https://api.github.com/repos/$REPO/commits/$COMMIT_SHA/check-runs?per_page=100")
 
-            for NAME in "${REQUIRED[@]}"; do
-              STATUS=$(echo "$CHECKS" | jq -r --arg n "$NAME" '.check_runs[] | select(.name==$n) | .status' | head -1)
-              CONCLUSION=$(echo "$CHECKS" | jq -r --arg n "$NAME" '.check_runs[] | select(.name==$n) | .conclusion' | head -1)
+            ALL_DONE=true
+            ALL_PASS=true
+            FOUND_OTHER=false
+
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              NAME=$(echo "$line" | cut -d'|' -f1)
+              STATUS=$(echo "$line" | cut -d'|' -f2)
+              CONCLUSION=$(echo "$line" | cut -d'|' -f3)
+
+              if is_self "$NAME"; then
+                continue
+              fi
+              FOUND_OTHER=true
 
               if [ "$STATUS" != "completed" ]; then
                 ALL_DONE=false
-              elif [ "$CONCLUSION" != "success" ]; then
+                echo "  pending: '$NAME' ($STATUS)"
+              elif [ "$CONCLUSION" != "success" ] && [ "$CONCLUSION" != "skipped" ] && [ "$CONCLUSION" != "neutral" ]; then
                 ALL_PASS=false
-                echo "Check '$NAME' conclusion: $CONCLUSION"
+                echo "  FAILED: '$NAME' conclusion=$CONCLUSION"
               fi
-            done
+            done < <(echo "$CHECKS" | jq -r '.check_runs[] | "\(.name)|\(.status)|\(.conclusion)"')
+
+            if [ "$FOUND_OTHER" = false ]; then
+              ALL_DONE=false
+              echo "No other checks found yet, waiting..."
+            fi
 
             if [ "$ALL_DONE" = true ]; then
               if [ "$ALL_PASS" = true ]; then
-                echo "All CI checks passed, approving PR #$PR_NUMBER"
+                echo "All other checks passed. Approving PR #$PR_NUMBER"
                 HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
                   -H "Authorization: token $APP_TOKEN" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" \
-                  -d '{"event":"APPROVE","body":"Auto-approved: all CI checks passed"}')
+                  -d '{"event":"APPROVE","body":"Auto-approved: all checks passed"}')
                 cat /tmp/resp.json
                 echo ""
-                if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-                  echo "PR #$PR_NUMBER approved"
-                  sleep 5
-                  echo "Merging PR #$PR_NUMBER..."
-                  MERGE_HTTP=$(curl -s -o /tmp/merge.json -w "%{http_code}" -X PUT \
-                    -H "Authorization: token $APP_TOKEN" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/merge" \
-                    -d '{"merge_method":"merge"}')
-                  cat /tmp/merge.json
-                  echo ""
-                  if [ "$MERGE_HTTP" = "200" ]; then
-                    echo "PR #$PR_NUMBER merged successfully"
-                    exit 0
-                  else
-                    echo "::error::Merge failed HTTP $MERGE_HTTP"
-                    exit 1
-                  fi
-                else
+                if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
                   echo "::error::Approve failed HTTP $HTTP"
                   exit 1
                 fi
+                echo "PR #$PR_NUMBER approved"
+
+                # Auto-update branch if behind
+                PR_INFO=$(curl -s -H "Authorization: token $APP_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
+                MERGEABLE_STATE=$(echo "$PR_INFO" | jq -r '.mergeable_state')
+                echo "mergeable_state: $MERGEABLE_STATE"
+
+                if [ "$MERGEABLE_STATE" = "behind" ]; then
+                  echo "Branch behind, updating..."
+                  UPDATE_HTTP=$(curl -s -o /tmp/update.json -w "%{http_code}" -X PUT \
+                    -H "Authorization: token $APP_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/update-branch" \
+                    -d '{}')
+                  echo "Update branch HTTP: $UPDATE_HTTP"
+                  if [ "$UPDATE_HTTP" = "202" ]; then
+                    sleep 15
+                  fi
+                fi
+
+                sleep 3
+                echo "Merging PR #$PR_NUMBER..."
+                MERGE_HTTP=$(curl -s -o /tmp/merge.json -w "%{http_code}" -X PUT \
+                  -H "Authorization: token $APP_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/merge" \
+                  -d '{"merge_method":"merge"}')
+                cat /tmp/merge.json
+                echo ""
+                if [ "$MERGE_HTTP" = "200" ]; then
+                  echo "PR #$PR_NUMBER merged successfully"
+                  exit 0
+                else
+                  echo "::error::Merge failed HTTP $MERGE_HTTP"
+                  exit 1
+                fi
               else
-                echo "::error::CI checks failed, will not approve"
+                echo "::error::Some checks failed, will not approve"
                 exit 1
               fi
             fi
 
-            echo "Waiting for CI... (attempt $attempt)"
+            echo "Waiting for all checks... (attempt $attempt/120)"
             sleep 5
           done
 
-          echo "::error::Timeout waiting for CI (5min)"
+          echo "::error::Timeout waiting for checks (10min)"
           exit 1
