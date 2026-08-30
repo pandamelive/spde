@@ -6,7 +6,8 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, anyhow};
+use pandanetos::error::{CoreError, Result};
 use async_trait::async_trait;
 use suppaftp::{FtpStream, NativeTlsConnector};
 
@@ -148,12 +149,12 @@ impl ChunkDownloader for FtpChunkDownloader {
             // 检查取消
             if cancel.is_cancelled() {
                 let _ = ftp.quit().await;
-                anyhow::bail!("download cancelled");
+                return Err(CoreError::External(anyhow!("download cancelled")));
             }
 
             let to_write = remaining.min(256 * 1024); // 256KB 块
             writer
-                .write_chunk(chunk.chunk_id, offset, &chunk_data[pos..pos + to_write])
+                .write_at(offset, &chunk_data[pos..pos + to_write])
                 .await
                 .context("failed to write chunk")?;
 

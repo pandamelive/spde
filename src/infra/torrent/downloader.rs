@@ -8,7 +8,8 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, anyhow};
+use pandanetos::error::{CoreError, Result};
 use async_trait::async_trait;
 
 use pandanetos::domain::{
@@ -78,7 +79,7 @@ impl ChunkDownloader for TorrentChunkDownloader {
 
         // 检查取消
         if cancel.is_cancelled() {
-            anyhow::bail!("download cancelled");
+            return Err(CoreError::External(anyhow!("download cancelled")));
         }
 
         // 确保保存目录存在
@@ -127,7 +128,7 @@ impl ChunkDownloader for TorrentChunkDownloader {
                     .with_context(|| format!("failed to read downloaded file: {:?}", path))?;
 
                 writer
-                    .write_chunk(chunk.chunk_id, offset, &data)
+                    .write_at(offset, &data)
                     .await
                     .context("failed to write chunk")?;
 
@@ -165,7 +166,7 @@ impl TorrentChunkDownloader {
         // let handle = session.add_torrent_from_file(source.uri(), Default::default()).await?;
         // handle.wait_until_completed().await?;
 
-        anyhow::bail!("BitTorrent download not fully implemented yet (基础版本)")
+        return Err(CoreError::External(anyhow!("BitTorrent download not fully implemented yet (基础版本)));")
     }
 
     /// 从磁力链接下载
@@ -177,7 +178,7 @@ impl TorrentChunkDownloader {
         // 基础版本：使用 librqbit 的 API 下载
         // 后续可以优化为：使用 librqbit 的 Session API 进行下载
 
-        anyhow::bail!("BitTorrent magnet download not fully implemented yet (基础版本)")
+        return Err(CoreError::External(anyhow!("BitTorrent magnet download not fully implemented yet (基础版本)));")
     }
 
     /// 从远程 .torrent 文件下载
@@ -189,6 +190,6 @@ impl TorrentChunkDownloader {
         // 基础版本：先下载种子文件，再下载内容
         // 后续可以优化为：使用 reqwest 下载种子文件，然后使用 librqbit 下载
 
-        anyhow::bail!("BitTorrent remote torrent download not fully implemented yet (基础版本)")
+        return Err(CoreError::External(anyhow!("BitTorrent remote torrent download not fully implemented yet (基础版本)));")
     }
 }

@@ -192,7 +192,12 @@ impl CdnThrottleDetector {
     }
 
     /// 记录一个源的速度
-    pub async fn record_source_speed(&self, source_id: &str, speed_bps: u64, active_connections: u32) {
+    pub async fn record_source_speed(
+        &self,
+        source_id: &str,
+        speed_bps: u64,
+        active_connections: u32,
+    ) {
         let mut states = self.source_states.lock().await;
         if let Some(state) = states.get_mut(source_id) {
             state.record_speed(speed_bps, active_connections, self.config.speed_window_size);
@@ -329,13 +334,19 @@ impl CdnThrottleDetector {
     }
 
     /// 检查限速源是否恢复
-    fn check_recovery(&self, state: &mut SourceThrottleState, current_speed: f64, threshold: f64) -> bool {
+    fn check_recovery(
+        &self,
+        state: &mut SourceThrottleState,
+        current_speed: f64,
+        threshold: f64,
+    ) -> bool {
         let now = Instant::now();
 
         // 检查是否到了恢复探测时间
         let should_probe = match state.last_recovery_probe {
             Some(last) => {
-                now.duration_since(last) >= Duration::from_secs(self.config.recovery_probe_interval_secs)
+                now.duration_since(last)
+                    >= Duration::from_secs(self.config.recovery_probe_interval_secs)
             }
             None => true, // 第一次探测
         };

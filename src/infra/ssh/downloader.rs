@@ -8,7 +8,8 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, anyhow};
+use pandanetos::error::{CoreError, Result};
 use async_trait::async_trait;
 use tokio::process::Command;
 
@@ -139,7 +140,7 @@ impl ChunkDownloader for SshChunkDownloader {
 
         // 检查取消
         if cancel.is_cancelled() {
-            anyhow::bail!("download cancelled");
+            return Err(CoreError::External(anyhow!("download cancelled")));
         }
 
         // 创建临时文件用于下载
@@ -169,10 +170,10 @@ impl ChunkDownloader for SshChunkDownloader {
         if !output.status.success() {
             // 清理临时文件
             let _ = tokio::fs::remove_file(&temp_file).await;
-            anyhow::bail!(
+            return Err(CoreError::External(anyhow!(
                 "ssh/sftp/scp command failed: {}",
                 String::from_utf8_lossy(&output.stderr)
-            );
+            )));
         }
 
         // 读取下载的文件并写入目标位置
@@ -185,7 +186,7 @@ impl ChunkDownloader for SshChunkDownloader {
 
         // 写入目标文件（从 chunk.offset 开始）
         writer
-            .write_chunk(chunk.chunk_id, chunk.offset, &data)
+            .write_at(chunk.offset, &data)
             .await
             .context("failed to write chunk")?;
 

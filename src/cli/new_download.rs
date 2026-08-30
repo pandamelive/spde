@@ -213,7 +213,7 @@ pub async fn execute_download(
     // 执行下载
     let result = scheduler
         .download(
-            Box::new(source),
+            source,
             downloader,
             save_path.clone(),
             progress_tx,

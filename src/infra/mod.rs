@@ -5,9 +5,20 @@
 
 pub mod disk;
 pub mod file;
+pub mod ftp;
 pub mod http;
+pub mod ssh;
+pub mod torrent;
 
 pub use disk::file_writer::FileChunkWriter;
+pub use file::downloader::FileChunkDownloader;
+pub use file::source::FileSource;
+pub use ftp::downloader::FtpChunkDownloader;
+pub use ftp::source::FtpSource;
 pub use http::downloader::HttpChunkDownloader;
 pub use http::mirror::dns::DnsMultiIpDiscoverer;
 pub use http::source::HttpSource;
+pub use ssh::downloader::SshChunkDownloader;
+pub use ssh::source::SshSource;
+pub use torrent::downloader::TorrentChunkDownloader;
+pub use torrent::source::TorrentSource;

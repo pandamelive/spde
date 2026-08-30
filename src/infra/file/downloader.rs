@@ -6,7 +6,8 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, anyhow};
+use pandanetos::error::{CoreError, Result};
 use async_trait::async_trait;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -46,7 +47,7 @@ impl ChunkDownloader for FileChunkDownloader {
             .with_context(|| format!("failed to stat file: {:?}", file_source.path()))?;
 
         if !metadata.is_file() {
-            anyhow::bail!("source is not a regular file: {:?}", file_source.path());
+            return Err(CoreError::External(anyhow!("source is not a regular file: {:?}", file_source.path())));
         }
 
         Ok(DownloadFileInfo {
@@ -88,7 +89,7 @@ impl ChunkDownloader for FileChunkDownloader {
         while remaining > 0 {
             // 检查取消
             if cancel.is_cancelled() {
-                anyhow::bail!("download cancelled");
+                return Err(CoreError::External(anyhow!("download cancelled")));
             }
 
             let to_read = remaining.min(buf.len());
@@ -98,16 +99,16 @@ impl ChunkDownloader for FileChunkDownloader {
                 .context("failed to read from source file")?;
 
             if n == 0 {
-                anyhow::bail!(
+                return Err(CoreError::External(anyhow!(
                     "unexpected EOF at offset {} (expected {} more bytes)",
                     written_offset,
                     remaining
-                );
+                )));
             }
 
             // 写入目标文件
             writer
-                .write_chunk(chunk.chunk_id, written_offset, &buf[..n])
+                .write_at(written_offset, &buf[..n])
                 .await
                 .context("failed to write chunk")?;
 
