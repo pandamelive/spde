@@ -42,3 +42,20 @@ pub use service::progress::ProgressSmoother;
 pub use service::scheduler::DownloadScheduler;
 pub use service::source_manager::SourceManager;
 pub use service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;
+
+// P0 新架构迁移新增导出
+pub use service::controller::DownloadController;
+pub use service::adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveStats};
+pub use service::cdn_throttle::{CdnThrottleConfig, CdnThrottleDetector, CdnThrottleStats};
+pub use infra::file::source::FileSource;
+pub use infra::file::downloader::FileChunkDownloader;
+#[cfg(feature = "ftp")]
+pub use infra::ftp::source::FtpSource;
+#[cfg(feature = "ftp")]
+pub use infra::ftp::downloader::FtpChunkDownloader;
+pub use infra::ssh::source::SshSource;
+pub use infra::ssh::downloader::SshChunkDownloader;
+#[cfg(feature = "torrent")]
+pub use infra::torrent::source::TorrentSource;
+#[cfg(feature = "torrent")]
+pub use infra::torrent::downloader::TorrentChunkDownloader;
