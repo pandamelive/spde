@@ -164,7 +164,9 @@ impl TorrentChunkDownloader {
         // let handle = session.add_torrent_from_file(source.uri(), Default::default()).await?;
         // handle.wait_until_completed().await?;
 
-        return Err(CoreError::External(anyhow!("BitTorrent download not fully implemented yet (基础版本)));")
+        return Err(CoreError::External(anyhow!(
+            "BitTorrent download not fully implemented yet (基础版本)"
+        )));
     }
 
     /// 从磁力链接下载
@@ -176,7 +178,9 @@ impl TorrentChunkDownloader {
         // 基础版本：使用 librqbit 的 API 下载
         // 后续可以优化为：使用 librqbit 的 Session API 进行下载
 
-        return Err(CoreError::External(anyhow!("BitTorrent magnet download not fully implemented yet (基础版本)));")
+        return Err(CoreError::External(anyhow!(
+            "BitTorrent magnet download not fully implemented yet (基础版本)"
+        )));
     }
 
     /// 从远程 .torrent 文件下载
@@ -188,6 +192,8 @@ impl TorrentChunkDownloader {
         // 基础版本：先下载种子文件，再下载内容
         // 后续可以优化为：使用 reqwest 下载种子文件，然后使用 librqbit 下载
 
-        return Err(CoreError::External(anyhow!("BitTorrent remote torrent download not fully implemented yet (基础版本)));")
+        return Err(CoreError::External(anyhow!(
+            "BitTorrent remote torrent download not fully implemented yet (基础版本)"
+        )));
     }
 }
