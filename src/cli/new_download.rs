@@ -212,12 +212,7 @@ pub async fn execute_download(
 
     // 执行下载
     let result = scheduler
-        .download(
-            source,
-            downloader,
-            save_path.clone(),
-            progress_tx,
-        )
+        .download(source, downloader, save_path.clone(), progress_tx)
         .await;
 
     // 等待进度转发完成（progress_rx 已经被 move 到 progress_handle 闭包中）

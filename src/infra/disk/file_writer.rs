@@ -95,9 +95,7 @@ impl ChunkWriter for FileChunkWriter {
                 Ok(())
             })
             .await
-            .map_err(|e| {
-                pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}"))
-            })?
+            .map_err(|e| pandanetos::error::CoreError::Internal(format!("spawn_blocking: {e}")))?
             .map_err(|e| {
                 pandanetos::error::CoreError::Internal(format!("seek_write offset={offset}: {e}"))
             })?;

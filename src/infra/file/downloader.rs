@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use pandanetos::domain::{
-    Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
+    CancellationToken, Chunk, ChunkDownloader, ChunkStats, DownloadFileInfo, DownloadSource,
 };
 use pandanetos::error::{CoreError, Result};
 use tokio::fs::File;

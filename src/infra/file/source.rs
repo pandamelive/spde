@@ -61,7 +61,7 @@ impl DownloadSource for FileSource {
             supports_resume: true,     // 支持断点续传
             max_concurrency: 8,        // 建议最大并发数（磁盘 IO 限制）
             chunk_size_range: Some((1 * 1024 * 1024, 16 * 1024 * 1024)), // 1MB ~ 16MB
-            immutable: true,            // 本地文件内容不可变（下载过程中不会变化）
+            immutable: true,           // 本地文件内容不可变（下载过程中不会变化）
         }
     }
 

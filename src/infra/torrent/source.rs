@@ -122,12 +122,12 @@ impl DownloadSource for TorrentSource {
 
     fn capabilities(&self) -> SourceCapabilities {
         SourceCapabilities {
-            supports_range: false,      // BitTorrent 是 piece 级下载，不支持字节级分片
-            supports_concurrent: true,  // 支持多 peer 并发下载
-            supports_resume: true,      // 支持断点续传（librqbit 支持）
-            max_concurrency: 16,         // 最大 peer 连接数
-            chunk_size_range: None,       // 无特殊要求（调度器会用单分片下载整个文件）
-            immutable: true,               // 种子文件内容不可变
+            supports_range: false,     // BitTorrent 是 piece 级下载，不支持字节级分片
+            supports_concurrent: true, // 支持多 peer 并发下载
+            supports_resume: true,     // 支持断点续传（librqbit 支持）
+            max_concurrency: 16,       // 最大 peer 连接数
+            chunk_size_range: None,    // 无特殊要求（调度器会用单分片下载整个文件）
+            immutable: true,           // 种子文件内容不可变
         }
     }
 

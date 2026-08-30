@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,6 +11,7 @@ use tokio::sync::{mpsc, Semaphore};
 use pandanetos::domain::{ChunkDownloader, DownloadProgress, DownloadSource};
 use spde::cli::config::{load_config, resolve_task_params, SpdeConfig};
 use spde::cli::paths::SpdePaths;
+use spde::domain::DownloadConfig;
 use spde::infra::file::downloader::FileChunkDownloader;
 use spde::infra::file::source::FileSource;
 #[cfg(feature = "ftp")]
@@ -25,7 +27,7 @@ use spde::infra::ssh::source::SshSource;
 use spde::infra::torrent::downloader::TorrentChunkDownloader;
 #[cfg(feature = "torrent")]
 use spde::infra::torrent::source::TorrentSource;
-use spde::service::scheduler::{DownloadConfig, DownloadScheduler};
+use spde::service::scheduler::DownloadScheduler;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -58,7 +60,7 @@ pub enum SubCommand {
 /// 根据 URL 协议类型创建对应的 Source 和 Downloader
 fn create_source_and_downloader(
     url: &str,
-    save_path: &PathBuf,
+    save_path: &Path,
     skip_tls_verify: bool,
     timeout_secs: u64,
 ) -> Result<(Box<dyn DownloadSource>, Arc<dyn ChunkDownloader>)> {
@@ -135,8 +137,10 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         chunk_size: 4 * 1024 * 1024, // 4MB 默认分片大小
         enable_mirror_discovery: true,
         enable_adaptive: true,
-        enable_cdn_throttle_detection: true,
+        save_dir: PathBuf::from(&cfg.output.save_path),
+        ..Default::default()
     };
+    let max_conns = scheduler_config.max_connections;
     let scheduler = Arc::new(DownloadScheduler::new(scheduler_config));
 
     // 注册镜像发现器（HTTP 专用）
@@ -144,10 +148,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     mirror_bus
         .register(Box::new(DnsMultiIpDiscoverer::new()))
         .await;
-    eprintln!(
-        "scheduler initialized: max_connections={}",
-        scheduler_config.max_connections
-    );
+    eprintln!("scheduler initialized: max_connections={}", max_conns);
 
     // 输出目录：绝对路径直接用，相对路径基于 base_dir
     let save_dir = PathBuf::from(&cfg.output.save_path);
@@ -200,18 +201,15 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
             // 根据 URL 协议类型创建对应的 Source 和 Downloader
-            let (source, downloader) = match create_source_and_downloader(
-                &url,
-                &file_path,
-                skip_tls_verify,
-                timeout_secs,
-            ) {
-                Ok(sd) => sd,
-                Err(e) => {
-                    eprintln!("[error] {}: create source failed: {:#}", name, e);
-                    return (name, url, filename, Err(e));
-                }
-            };
+            let (source, downloader) =
+                match create_source_and_downloader(&url, &file_path, skip_tls_verify, timeout_secs)
+                {
+                    Ok(sd) => sd,
+                    Err(e) => {
+                        eprintln!("[error] {}: create source failed: {:#}", name, e);
+                        return (name, url, filename, Err(e));
+                    }
+                };
 
             // 创建进度汇报通道
             let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
@@ -264,7 +262,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("[error] {}: {:#}", name, e);
-                    (name, url, filename, Err(e))
+                    (name, url, filename, Err(e.into()))
                 }
             }
         });
@@ -353,7 +351,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     let elapsed = overall_start.elapsed().as_secs_f64();
     let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
-    let avg_speed = if elapsed > 0.0 { total_mb / elapsed } else { 0.0 };
+    let avg_speed = if elapsed > 0.0 {
+        total_mb / elapsed
+    } else {
+        0.0
+    };
 
     eprintln!();
     eprintln!("========== 下载汇总 ==========");
@@ -387,12 +389,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = SpdePaths::from_exe_side()?;
     eprintln!("spde work root: {:?}", paths.base_dir);
-    paths
-        .check_and_prepare()
-        .context("初始化目录文件失败")?;
-    paths
-        .verify_integrity()
-        .context("目录文件完整性校验失败")?;
+    paths.check_and_prepare().context("初始化目录文件失败")?;
+    paths.verify_integrity().context("目录文件完整性校验失败")?;
 
     match cli.cmd {
         SubCommand::Manifest => {

@@ -828,7 +828,10 @@ impl DownloadBackend for ChunkedHttpDownloader {
             enable_mirror_discovery: false,
             enable_adaptive: true,
             enable_progress_smoothing: true,
-            save_dir: save_path.parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+            save_dir: save_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
         };
 
         // 4. 构建分片下载器和调度器
@@ -890,7 +893,11 @@ impl DownloadBackend for ChunkedHttpDownloader {
                     } else {
                         0.0
                     },
-                    status: if r.success { "completed".into() } else { "failed".into() },
+                    status: if r.success {
+                        "completed".into()
+                    } else {
+                        "failed".into()
+                    },
                 };
 
                 if let Some(cb) = &progress {

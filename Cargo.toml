@@ -1,3 +1,7 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
 [package]
 name = "spde"
 version = "1.2.0"
@@ -6,7 +10,7 @@ description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版�
 license = "MIT"
 
 [dependencies]
-pandanetos = { path = "../pandanetos/crates/pandanetos" }
+pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
 crossbeam = "0.8"
 rand = "0.8"
 regex = "1"

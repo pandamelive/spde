@@ -8,13 +8,13 @@
 
 use std::time::Instant;
 
+use super::source::{TorrentSource, TorrentSourceType};
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use pandanetos::domain::{
-    Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
+    CancellationToken, Chunk, ChunkDownloader, ChunkStats, DownloadFileInfo, DownloadSource,
 };
 use pandanetos::error::{CoreError, Result};
-use super::source::{TorrentSource, TorrentSourceType};
 
 /// BitTorrent 分片下载器
 #[derive(Debug, Clone, Default)]
@@ -118,7 +118,11 @@ impl ChunkDownloader for TorrentChunkDownloader {
 
         // 遍历下载的文件，写入目标位置
         let mut entries = downloaded_files;
-        while let Some(entry) = entries.next_entry().await? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| CoreError::External(anyhow!("read dir entry failed: {e}")))?
+        {
             let path = entry.path();
             if path.is_file() {
                 let data = tokio::fs::read(&path)

@@ -6,6 +6,7 @@
 //! 注意：由于通过系统命令实现，不支持分片下载和多连接并发，
 //! 调度器会用单连接下载整个文件。
 
+use anyhow::Context;
 use std::any::Any;
 
 use pandanetos::domain::{DownloadSource, SourceCapabilities};
@@ -46,7 +47,12 @@ impl SshSource {
             .ok_or_else(|| anyhow::anyhow!("no host in ssh url"))?
             .to_string();
         let port = parsed.port().unwrap_or(22);
-        let username = parsed.username().unwrap_or("root").to_string();
+        let username_raw = parsed.username();
+        let username = if username_raw.is_empty() {
+            "root".to_string()
+        } else {
+            username_raw.to_string()
+        };
         let password = parsed.password().map(|s| s.to_string());
         let remote_path = parsed.path().to_string();
 
@@ -125,9 +131,9 @@ impl DownloadSource for SshSource {
             supports_range: false,      // 通过系统命令实现，不支持分片下载
             supports_concurrent: false, // 不支持多连接并发
             supports_resume: false,     // 不支持断点续传
-            max_concurrency: 1,          // 只能单连接
-            chunk_size_range: None,      // 无特殊要求（调度器会用单分片下载整个文件）
-            immutable: true,              // 远程文件内容不可变
+            max_concurrency: 1,         // 只能单连接
+            chunk_size_range: None,     // 无特殊要求（调度器会用单分片下载整个文件）
+            immutable: true,            // 远程文件内容不可变
         }
     }
 

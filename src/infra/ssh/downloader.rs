@@ -3,20 +3,19 @@
 //! 实现 `ChunkDownloader` trait，支持 sftp://、scp://、ssh:// 协议。
 //! 内部调用系统自带的 sftp/scp 命令，无需额外编译依赖。
 //!
-//! 注意：由于通过系统命令实现，不支持分片下载和多连接并发。
+//! 注意：由于通过系统命令实现，不支持分片下载和多连接并发，
 //! 调度器会用单分片下载整个文件（chunk_size = file_size）。
 
 use std::path::Path;
+use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use pandanetos::domain::{
-    Chunk, ChunkDownloader, ChunkStats, CancellationToken, DownloadFileInfo, DownloadSource,
+    CancellationToken, Chunk, ChunkDownloader, ChunkStats, DownloadFileInfo, DownloadSource,
 };
 use pandanetos::error::{CoreError, Result};
-use russh_sftp::client::SftpSession;
-use tokio::net::TcpStream;
 
 use super::source::SshSource;
 
@@ -34,11 +33,12 @@ impl SshChunkDownloader {
     }
 
     /// 构建 sftp 下载命令
-    fn build_sftp_command(source: &SshSource, local_path: &std::path::Path) -> Command {
+    fn build_sftp_command(source: &SshSource, local_path: &Path, timeout_secs: u64) -> Command {
         let mut cmd = Command::new("sftp");
         cmd.arg("-P").arg(source.port().to_string());
-        cmd.arg("-o").arg(format!("StrictHostKeyChecking=no"));
-        cmd.arg("-o").arg(format!("ConnectTimeout=10"));
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        cmd.arg("-o")
+            .arg(format!("ConnectTimeout={}", timeout_secs.max(1)));
         cmd.arg(format!(
             "{}@{}:{}",
             source.username(),
@@ -50,11 +50,12 @@ impl SshChunkDownloader {
     }
 
     /// 构建 scp 下载命令
-    fn build_scp_command(source: &SshSource, local_path: &std::path::Path) -> Command {
+    fn build_scp_command(source: &SshSource, local_path: &Path, timeout_secs: u64) -> Command {
         let mut cmd = Command::new("scp");
         cmd.arg("-P").arg(source.port().to_string());
-        cmd.arg("-o").arg(format!("StrictHostKeyChecking=no"));
-        cmd.arg("-o").arg(format!("ConnectTimeout=10"));
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        cmd.arg("-o")
+            .arg(format!("ConnectTimeout={}", timeout_secs.max(1)));
         cmd.arg(format!(
             "{}@{}:{}",
             source.username(),
@@ -81,51 +82,58 @@ impl ChunkDownloader for SshChunkDownloader {
             .downcast_ref::<SshSource>()
             .context("source is not a SshSource")?;
 
-        // 尝试用 sftp 的 ls 命令获取文件大小
-        let output = Command::new("sftp")
-            .arg("-P")
-            .arg(ssh_source.port().to_string())
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("ConnectTimeout=10")
-            .arg("-b")
-            .arg("-")
-            .arg(format!(
-                "{}@{}",
-                ssh_source.username(),
-                ssh_source.host()
-            ))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await;
+        let source_clone = ssh_source.clone();
+        let timeout_secs = self.timeout_secs;
 
-        // 如果 sftp 命令失败或不可用，返回默认值（假设文件存在，大小为 0，后续下载时会获取真实大小）
-        let size_bytes = match output {
-            Ok(output) if output.status.success() => {
-                // 解析 ls 输出获取文件大小（简化实现，实际解析比较复杂）
-                // 这里返回 0，让调度器用单分片下载整个文件
-                0
+        // 同步探测放在 spawn_blocking 中
+        let size = tokio::task::spawn_blocking(move || -> u64 {
+            // 尝试用 sftp 的 ls 命令获取文件大小
+            let output = Command::new("sftp")
+                .arg("-P")
+                .arg(source_clone.port().to_string())
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg("-o")
+                .arg("BatchMode=yes")
+                .arg("-o")
+                .arg(format!("ConnectTimeout={}", timeout_secs.max(1)))
+                .arg(format!(
+                    "{}@{}:{}",
+                    source_clone.username(),
+                    source_clone.host(),
+                    source_clone.remote_path()
+                ))
+                .arg("-ls")
+                .output();
+
+            match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    // 解析 ls 输出，提取文件大小
+                    for line in stdout.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 5 {
+                            if let Ok(size) = parts[4].parse::<u64>() {
+                                return size;
+                            }
+                        }
+                    }
+                    0
+                }
+                _ => 0,
             }
-            _ => 0,
-        };
+        })
+        .await
+        .unwrap_or(0);
 
         Ok(DownloadFileInfo {
-            size_bytes,
+            size_bytes: size,
             supports_resume: false,
             supports_multi_connection: false,
         })
     }
 
-    /// 下载一个分片
-    ///
-    /// 由于 SSH 协议不支持分片下载，这里实现为：
-    /// - 如果是第一个分片（offset=0），下载整个文件到目标位置
-    /// - 如果不是第一个分片，假设文件已经下载完成，直接从已下载的文件中读取分片数据
-    ///
-    /// 注意：调度器会根据 capabilities 用单分片下载整个文件，所以通常只会调用一次。
+    /// 下载整个文件（系统命令实现，不支持分片）
     async fn download_chunk(
         &self,
         source: &dyn DownloadSource,
@@ -149,50 +157,74 @@ impl ChunkDownloader for SshChunkDownloader {
         let temp_file = temp_dir.join(format!(
             "spde_ssh_{}_{}.tmp",
             chunk.chunk_id,
-            std::process::id()
+            uuid::Uuid::new_v4()
         ));
 
-        // 根据协议类型选择下载命令
-        let mut cmd = if ssh_source.scheme() == "scp" {
-            Self::build_scp_command(ssh_source, &temp_file)
-        } else {
-            Self::build_sftp_command(ssh_source, &temp_file)
-        };
+        let source_clone = ssh_source.clone();
+        let temp_file_clone = temp_file.clone();
+        let timeout_secs = self.timeout_secs;
 
-        // 执行下载命令（带超时）
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(self.timeout_secs),
-            cmd.output(),
-        )
+        // 同步下载放在 spawn_blocking 中
+        let download_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            // 根据协议类型选择下载命令
+            let mut cmd = if source_clone.scheme() == "scp" {
+                Self::build_scp_command(&source_clone, &temp_file_clone, timeout_secs)
+            } else {
+                Self::build_sftp_command(&source_clone, &temp_file_clone, timeout_secs)
+            };
+
+            let output = cmd
+                .output()
+                .context("failed to execute ssh/sftp/scp command")?;
+
+            if !output.status.success() {
+                return Err(anyhow!(
+                    "ssh/sftp/scp command failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(())
+        })
         .await
-        .context("ssh/sftp/scp command timed out")?
-        .context("failed to execute ssh/sftp/scp command")?;
+        .context("SSH download task panicked")?;
 
-        if !output.status.success() {
-            // 清理临时文件
-            let _ = tokio::fs::remove_file(&temp_file).await;
-            return Err(CoreError::External(anyhow!(
-                "ssh/sftp/scp command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+        // 检查取消
+        if cancel.is_cancelled() {
+            let _ = std::fs::remove_file(&temp_file);
+            return Err(CoreError::External(anyhow!("download cancelled")));
         }
 
-        // 读取下载的文件并写入目标位置
-        let data = tokio::fs::read(&temp_file)
-            .await
-            .context("failed to read downloaded file")?;
+        download_result.map_err(|e| CoreError::External(anyhow!("SSH download failed: {e}")))?;
+
+        // 读取下载的文件
+        let data = std::fs::read(&temp_file).context("failed to read downloaded file")?;
 
         // 清理临时文件
-        let _ = tokio::fs::remove_file(&temp_file).await;
+        let _ = std::fs::remove_file(&temp_file);
 
-        // 写入目标文件（从 chunk.offset 开始）
-        writer
-            .write_at(chunk.offset, &data)
-            .await
-            .context("failed to write chunk")?;
+        // 分块写入目标文件（从 chunk.offset 开始）
+        let mut offset = chunk.offset;
+        let mut remaining = data.len();
+        let mut pos = 0;
+
+        while remaining > 0 {
+            if cancel.is_cancelled() {
+                return Err(CoreError::External(anyhow!("download cancelled")));
+            }
+
+            let to_write = remaining.min(256 * 1024); // 256KB 块
+            writer
+                .write_at(offset, &data[pos..pos + to_write])
+                .await
+                .context("failed to write chunk")?;
+
+            offset += to_write as u64;
+            pos += to_write;
+            remaining -= to_write;
+        }
 
         let elapsed = start.elapsed().as_secs_f64();
-
         Ok(ChunkStats {
             chunk_id: chunk.chunk_id,
             source_id: source.identifier(),

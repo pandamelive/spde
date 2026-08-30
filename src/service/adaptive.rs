@@ -62,8 +62,8 @@ impl Default for AdaptiveConfig {
             adjust_step: 2,
             enabled: true,
             throttle_recovery_interval_secs: 60, // 60秒试探一次
-            exponential_backoff_factor: 1.5,       // 每次失败减少 1.5 倍
-            dynamic_threshold_enabled: true,        // 启用动态阈值
+            exponential_backoff_factor: 1.5,     // 每次失败减少 1.5 倍
+            dynamic_threshold_enabled: true,     // 启用动态阈值
         }
     }
 }
@@ -210,8 +210,7 @@ impl AdaptiveController {
         }
 
         let mut last_probe = self.last_recovery_probe.lock().await;
-        if last_probe.elapsed() < Duration::from_secs(self.config.throttle_recovery_interval_secs)
-        {
+        if last_probe.elapsed() < Duration::from_secs(self.config.throttle_recovery_interval_secs) {
             return false;
         }
         *last_probe = Instant::now();
@@ -322,9 +321,13 @@ impl AdaptiveController {
         }
 
         // 1. 失败率过高，减少连接（指数退避）
-        if failure_rate > self.config.failure_rate_threshold && current > self.config.min_connections {
+        if failure_rate > self.config.failure_rate_threshold
+            && current > self.config.min_connections
+        {
             let backoff_step = self.exponential_backoff_step();
-            let new_conn = current.saturating_sub(backoff_step).max(self.config.min_connections);
+            let new_conn = current
+                .saturating_sub(backoff_step)
+                .max(self.config.min_connections);
             self.current_connections.store(new_conn, Ordering::Relaxed);
             self.stagnation_count.store(0, Ordering::Relaxed);
             self.backoff_count.fetch_add(1, Ordering::Relaxed);
@@ -366,7 +369,8 @@ impl AdaptiveController {
             if stagnation >= self.config.stagnation_limit {
                 // 连续多次停滞，判定为 CDN 限速
                 self.is_throttled.store(1, Ordering::Relaxed);
-                self.pre_throttle_connections.store(current, Ordering::Relaxed);
+                self.pre_throttle_connections
+                    .store(current, Ordering::Relaxed);
 
                 info!(
                     "自适应: 速度连续 {} 次增长停滞（增长率 {:.2}% < 动态阈值 {:.2}%），判定为 CDN 限速，固定连接数 {}",
@@ -429,7 +433,9 @@ impl AdaptiveController {
 
         info!(
             "自适应控制启动: 初始连接={}, 最大={}, 调整间隔={}s",
-            self.config.initial_connections, self.config.max_connections, self.config.adjust_interval_secs
+            self.config.initial_connections,
+            self.config.max_connections,
+            self.config.adjust_interval_secs
         );
 
         loop {

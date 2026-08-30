@@ -176,7 +176,10 @@ impl CdnThrottleDetector {
     pub async fn register_source(&self, source_id: &str) {
         let mut states = self.source_states.lock().await;
         if !states.contains_key(source_id) {
-            states.insert(source_id.to_string(), SourceThrottleState::new(source_id.to_string()));
+            states.insert(
+                source_id.to_string(),
+                SourceThrottleState::new(source_id.to_string()),
+            );
             self.total_sources.fetch_add(1, Ordering::Relaxed);
             debug!("CDN限速检测: 注册源 {}", source_id);
         }
@@ -207,13 +210,20 @@ impl CdnThrottleDetector {
     /// 检查一个源是否被限速
     pub async fn is_source_throttled(&self, source_id: &str) -> bool {
         let states = self.source_states.lock().await;
-        states.get(source_id).map(|s| s.is_throttled).unwrap_or(false)
+        states
+            .get(source_id)
+            .map(|s| s.is_throttled)
+            .unwrap_or(false)
     }
 
     /// 获取限速源的连接数比例
     pub async fn throttled_connection_ratio(&self, source_id: &str) -> f64 {
         let states = self.source_states.lock().await;
-        if states.get(source_id).map(|s| s.is_throttled).unwrap_or(false) {
+        if states
+            .get(source_id)
+            .map(|s| s.is_throttled)
+            .unwrap_or(false)
+        {
             self.config.throttled_connection_ratio
         } else {
             1.0

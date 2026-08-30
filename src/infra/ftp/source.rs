@@ -3,6 +3,7 @@
 //! 实现 `DownloadSource` trait，支持 ftp:// 和 ftps:// 协议。
 //! 支持匿名登录和用户名密码登录，支持断点续传。
 
+use anyhow::Context;
 use std::any::Any;
 
 use pandanetos::domain::{DownloadSource, SourceCapabilities};
@@ -42,7 +43,12 @@ impl FtpSource {
             .ok_or_else(|| anyhow::anyhow!("no host in ftp url"))?
             .to_string();
         let port = parsed.port().unwrap_or(21);
-        let username = parsed.username().unwrap_or("anonymous").to_string();
+        let username_raw = parsed.username();
+        let username = if username_raw.is_empty() {
+            "anonymous".to_string()
+        } else {
+            username_raw.to_string()
+        };
         let password = parsed.password().unwrap_or("anonymous@").to_string();
         let remote_path = parsed.path().to_string();
         let is_ftps = parsed.scheme() == "ftps";
@@ -104,7 +110,13 @@ impl DownloadSource for FtpSource {
     }
 
     fn identifier(&self) -> String {
-        format!("{}://{}:{}{}", self.protocol(), self.host, self.port, self.remote_path)
+        format!(
+            "{}://{}:{}{}",
+            self.protocol(),
+            self.host,
+            self.port,
+            self.remote_path
+        )
     }
 
     fn display_name(&self) -> String {
@@ -118,7 +130,7 @@ impl DownloadSource for FtpSource {
             supports_resume: true,     // 支持断点续传
             max_concurrency: 8,        // FTP 服务器通常限制连接数
             chunk_size_range: Some((1 * 1024 * 1024, 16 * 1024 * 1024)), // 1MB ~ 16MB
-            immutable: true,            // 远程文件内容不可变
+            immutable: true,           // 远程文件内容不可变
         }
     }
 
