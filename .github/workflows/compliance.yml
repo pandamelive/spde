@@ -1,0 +1,107 @@
+# =============================================================================
+# PandaNetOS 生态合规检查 CI
+# =============================================================================
+# 所有生态项目（pk、spde、pcdn-keeper 等）必须包含此 workflow。
+# 放在各项目的 .github/workflows/compliance.yml
+#
+# 作用：
+#   1. PR 创建/更新时自动运行合规检查
+#   2. 检查不通过则阻断合并（配合分支保护规则）
+#   3. 同时 checkout 标准库仓库到同级目录，确保 path 依赖可解析
+# =============================================================================
+
+name: PandaNetOS Compliance
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  compliance:
+    name: Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 本项目
+        uses: actions/checkout@v4
+
+      # 关键：同时 checkout 标准库仓库到同级目录
+      # 这样 path = "../PandaNetOS/crates/pandanetos" 才能解析
+      - name: Checkout PandaNetOS 标准库
+        uses: actions/checkout@v4
+        with:
+          repository: PandaNetOS/PandaNetOS
+          ref: main
+          path: ../PandaNetOS
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            ../PandaNetOS
+
+      - name: 运行 PandaNetOS 合规检查
+        run: bash ../PandaNetOS/scripts/check_compliance.sh .
+
+      - name: 上传检查日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-log
+          path: |
+            **/Cargo.toml
+            README.md
+          retention-days: 7
+
+  # ===========================================================================
+  # 独立的 fmt / clippy / test 检查（状态更清晰，便于分支保护勾选）
+  # ===========================================================================
+  format:
+    name: Cargo Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: PandaNetOS/PandaNetOS
+          path: ../PandaNetOS
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Cargo Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: PandaNetOS/PandaNetOS
+          path: ../PandaNetOS
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Cargo Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: PandaNetOS/PandaNetOS
+          path: ../PandaNetOS
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all
