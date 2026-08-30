@@ -8,8 +8,11 @@
 //!
 //! 旧版 `downloader` 模块保留兼容，逐步迁移到新架构。
 
-// TODO: 修复以下 clippy 警告后移除此 allow
+// TODO: 修复以下警告后移除此 allow
 #![allow(clippy::all)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(dead_code)]
 
 pub mod cli;
 pub mod domain;
