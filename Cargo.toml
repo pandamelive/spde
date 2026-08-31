@@ -56,6 +56,10 @@ default = ["ftp", "torrent"]
 ftp = ["dep:suppaftp"]
 torrent = ["dep:librqbit"]
 
+# Linux musl 交叉编译需要 vendored OpenSSL（librqbit 通过 crypto-hash 依赖 openssl）
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tempfile = "3"
 
