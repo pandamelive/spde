@@ -22,4 +22,4 @@ jobs:
           delete-on-failure: true
           required-checks: 'Cargo Test,Cargo Format,Cargo Clippy,PandaNetOS Compliance'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          dispatch-token: ${{ secrets.PAT_FOR_DOWNSTREAM }}
+          dispatch-token: ${{ secrets.PAT_FOR_PCDNKEEPER }}
