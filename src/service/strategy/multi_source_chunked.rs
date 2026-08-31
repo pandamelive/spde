@@ -39,6 +39,9 @@ pub struct MultiSourceChunkedStrategy {
 
 impl MultiSourceChunkedStrategy {
     /// 创建一个新的多源并发分片策略
+    ///
+    /// `initial_connections = 0` 表示自动模式（按 max_connections 计算初始值），
+    /// 不得 clamp 为 1，否则自动分支永远不会执行。
     pub fn new(
         initial_connections: u32,
         max_connections: u32,
@@ -46,7 +49,7 @@ impl MultiSourceChunkedStrategy {
         downloader: Arc<dyn ChunkDownloader>,
     ) -> Self {
         Self {
-            initial_connections: initial_connections.max(1),
+            initial_connections, // 0 = 自动，保留原值不 clamp
             max_connections: max_connections.max(1),
             min_connections: min_connections.max(1),
             max_retries: 10,
@@ -108,22 +111,25 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
         }
 
         // 确定初始连接数
-        // 优化：不依赖 sources.len()，直接用 max_connections 的一半（向上取整）
-        // 确保至少有 2 个连接（除非 max_connections=1）
+        // initial_connections=0 时使用自动模式：直接用 max_connections，
+        // 因为自适应控制器当前未接入策略执行循环，起步即开满配置值。
         let initial_workers = if self.initial_connections == 0 {
-            let target = (self.max_connections + 1) / 2; // max_connections 的一半
-            target.clamp(self.min_connections.max(2), self.max_connections)
+            self.max_connections
+                .max(self.min_connections.max(2))
+                .min(self.max_connections)
         } else {
             self.initial_connections
                 .clamp(self.min_connections, self.max_connections)
         };
 
-        progress_smoother.set_active_connections(initial_workers);
+        progress_smoother.set_active_connections(0);
         progress_smoother.force_report().await;
 
         // 启动 worker
         let mut worker_handles = Vec::new();
-        let active_workers = Arc::new(std::sync::atomic::AtomicU32::new(initial_workers));
+        // active_workers 从 0 开始，每个 worker 启动时 fetch_add(1)，
+        // 退出时 fetch_sub(1)，准确反映当前活跃 worker 数。
+        let active_workers = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         // 启动进度汇报 task（定期从 smoother 发送）
         let progress_smoother_clone = progress_smoother.clone();
@@ -205,6 +211,25 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
     }
 }
 
+/// 活跃 worker 计数守卫：创建时 +1，drop 时 -1，确保计数准确
+struct ActiveWorkerGuard {
+    count: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl ActiveWorkerGuard {
+    fn new(count: Arc<std::sync::atomic::AtomicU32>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { count }
+    }
+}
+
+impl Drop for ActiveWorkerGuard {
+    fn drop(&mut self) {
+        self.count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// 启动一个 worker
 #[allow(clippy::too_many_arguments)]
 fn spawn_worker(
@@ -219,8 +244,8 @@ fn spawn_worker(
     active_workers: Arc<std::sync::atomic::AtomicU32>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // worker 启动时计数+1
-        active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // ActiveWorkerGuard 在创建时 +1，drop 时 -1，准确反映活跃 worker 数
+        let _guard = ActiveWorkerGuard::new(active_workers.clone());
         while !cancel.is_cancelled() && !chunk_scheduler.is_all_completed() {
             // 取一个分片
             let chunk = match chunk_scheduler.next_chunk().await {
