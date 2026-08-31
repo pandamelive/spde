@@ -1,16 +1,16 @@
-//! 统一调度编排器
+//! Unified download scheduler
 //!
-//! 整个智能下载器的入口，负责：
-//! 1. 接收任务（URL + 配置）
-//! 2. 调用 MirrorBus 发现所有可用镜像
-//! 3. 调用 ChunkDownloader.probe 验证源，获取文件大小和能力
-//! 4. 根据能力选择下载策略（StrategySelector）
-//! 5. 创建 ChunkSet（分片规划）
-//! 6. 加载 ResumeBitmap（断点续传）
-//! 7. 执行策略，收集进度
-//! 8. 完成后收尾（校验、rename、清理位图）
+//! Entry point of the smart downloader, responsible for:
+//! 1. Receive task (URL + config)
+//! 2. Use MirrorBus to discover all available mirrors
+//! 3. Use ChunkDownloader.probe to verify source, get file size and capabilities
+//! 4. Select download strategy based on capabilities (StrategySelector)
+//! 5. Create ChunkSet (chunk planning)
+//! 6. Load ResumeBitmap (resume)
+//! 7. Execute strategy, collect progress
+//! 8. Finalize after completion (verify, rename, cleanup bitmap)
 //!
-//! 协议无关，只操作 domain 层的抽象。
+//! Protocol-agnostic, only operates on domain layer abstractions.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,16 +26,16 @@ use crate::domain::DownloadConfig;
 use crate::service::mirror_bus::MirrorBus;
 use crate::service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;
 
-/// 统一调度编排器
+/// Unified download scheduler
 pub struct DownloadScheduler {
-    /// 镜像发现总线
+    /// Mirror discovery bus
     mirror_bus: Arc<MirrorBus>,
-    /// 下载配置
+    /// Download config
     config: DownloadConfig,
 }
 
 impl DownloadScheduler {
-    /// 创建一个新的下载调度器
+    /// Create a new download scheduler
     pub fn new(config: DownloadConfig) -> Self {
         Self {
             mirror_bus: Arc::new(MirrorBus::new()),
@@ -43,21 +43,21 @@ impl DownloadScheduler {
         }
     }
 
-    /// 获取镜像发现总线（用于注册发现器）
+    /// Get mirror discovery bus (for registering discoverers)
     pub fn mirror_bus(&self) -> Arc<MirrorBus> {
         self.mirror_bus.clone()
     }
 
-    /// 下载一个文件
+    /// Download a file
     ///
-    /// # 参数
-    /// - `source`：原始下载源
-    /// - `downloader`：对应的协议下载器
-    /// - `save_path`：保存路径
-    /// - `progress_tx`：进度汇报通道
+    /// # Parameters
+    /// - `source`: original download source
+    /// - `downloader`: corresponding protocol downloader
+    /// - `save_path`: save path
+    /// - `progress_tx`: progress reporting channel
     ///
-    /// # 返回
-    /// 下载结果
+    /// # Returns
+    /// Download result
     pub async fn download(
         &self,
         source: Box<dyn DownloadSource>,
@@ -67,7 +67,7 @@ impl DownloadScheduler {
     ) -> Result<DownloadResult> {
         let cancel = CancellationToken::new();
 
-        // 1. 探测原始源，获取文件大小和能力
+        // 1. Probe original source, get file size and capabilities
         let file_info = downloader.probe(source.as_ref()).await?;
         if file_info.size_bytes == 0 {
             return Err(CoreError::InvalidParam(
@@ -75,7 +75,7 @@ impl DownloadScheduler {
             ));
         }
 
-        // 用 probe 结果更新 capabilities（服务器实际支持的能力，而非硬编码假设）
+        // Update capabilities with probe results (actual server capabilities, not hardcoded assumptions)
         let mut capabilities = source.capabilities();
         capabilities.supports_range = file_info.supports_resume;
         capabilities.supports_concurrent = file_info.supports_multi_connection;
@@ -85,7 +85,7 @@ impl DownloadScheduler {
             file_info.size_bytes, capabilities.supports_range, capabilities.supports_concurrent
         );
 
-        // 2. 发现所有可用镜像
+        // 2. Discover all available mirrors
         let sources = if self.config.enable_mirror_discovery {
             self.mirror_bus
                 .discover(source.as_ref(), downloader.as_ref(), file_info.size_bytes)
@@ -96,11 +96,11 @@ impl DownloadScheduler {
 
         eprintln!("[scheduler] available sources: {}", sources.len());
 
-        // 3. 选择下载策略
+        // 3. Select download strategy
         let strategy = self.select_strategy(&sources, &capabilities, downloader.clone());
         eprintln!("[scheduler] selected strategy: {}", strategy.name());
 
-        // 4. 计算分片大小，创建 ChunkSet
+        // 4. Calculate chunk size, create ChunkSet
         let chunk_size = self.calculate_chunk_size(
             file_info.size_bytes,
             self.config.max_connections,
@@ -113,13 +113,18 @@ impl DownloadScheduler {
             chunk_set.lock().await.chunks.len()
         );
 
-        // 5. 创建写入器（.part 临时文件）
+        // 5. Create writer (dry_run mode uses null writer, does not write to disk)
         let part_path = save_path.with_extension("part");
-        let writer = Arc::new(
-            crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone()).await?,
-        );
+        let writer: Arc<dyn ChunkWriter> = if self.config.dry_run {
+            Arc::new(crate::infra::disk::null_writer::NullChunkWriter::new())
+        } else {
+            Arc::new(
+                crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone())
+                    .await?,
+            )
+        };
 
-        // 6. 执行策略
+        // 6. Execute strategy
         let result = strategy
             .execute(
                 sources,
@@ -130,34 +135,40 @@ impl DownloadScheduler {
             )
             .await?;
 
-        // 7. 收尾：rename .part → 目标文件
-        if result.success {
+        // 7. Finalize: rename .part -> target file (skip in dry_run mode)
+        if result.success && !self.config.dry_run {
             writer.flush().await?;
-            // 关闭 writer 后 rename
-            // FileChunkWriter 没有 close 方法，drop 时会自动关闭
             drop(writer);
             tokio::fs::rename(&part_path, &save_path)
                 .await
                 .map_err(|e| {
-                    CoreError::Internal(format!("rename {:?} -> {:?}: {}", part_path, save_path, e))
+                    CoreError::Internal(format!(
+                        "rename {:?} -> {:?}: {}",
+                        part_path, save_path, e
+                    ))
                 })?;
             eprintln!("[scheduler] download complete: {:?}", save_path);
+        } else if result.success && self.config.dry_run {
+            eprintln!(
+                "[scheduler] download complete (dry-run, not saved to disk): {:?}",
+                save_path
+            );
         }
 
         Ok(result)
     }
 
-    /// 选择下载策略
+    /// Select download strategy
     fn select_strategy(
         &self,
         _sources: &[Box<dyn DownloadSource>],
         caps: &SourceCapabilities,
         downloader: Arc<dyn ChunkDownloader>,
     ) -> Box<dyn DownloadStrategy> {
-        // 目前只有 MultiSourceChunked 策略
-        // 后续可扩展：SingleSourceFastest、TorrentNative 等
+        // Currently only MultiSourceChunked strategy
+        // Future extensions: SingleSourceFastest, TorrentNative, etc.
         let strategy = MultiSourceChunkedStrategy::new(
-            0, // 自动
+            0, // auto
             self.config.max_connections,
             self.config.min_connections,
             downloader,
@@ -166,24 +177,24 @@ impl DownloadScheduler {
         if strategy.supports(&[], caps) {
             Box::new(strategy)
         } else {
-            // 兜底：还是用 MultiSourceChunked（即使能力不匹配，也能尝试）
+            // Fallback: still use MultiSourceChunked (even if capabilities don't match, can still try)
             Box::new(strategy)
         }
     }
 
-    /// 计算分片大小
+    /// Calculate chunk size
     fn calculate_chunk_size(
         &self,
         total_size: u64,
         connections: u32,
         caps: &SourceCapabilities,
     ) -> u64 {
-        // 目标：每个连接平均分到 8-16 个分片
+        // Goal: each connection gets 8-16 chunks on average
         let target_chunks_per_conn = 12;
         let total_chunks = connections as u64 * target_chunks_per_conn;
         let dynamic = total_size / total_chunks.max(1);
 
-        // 钳制在协议建议的范围内
+        // Clamp within protocol recommended range
         let (min, max) = caps
             .chunk_size_range
             .unwrap_or((4 * 1024 * 1024, 64 * 1024 * 1024));
@@ -202,10 +213,10 @@ mod tests {
         let scheduler = DownloadScheduler::new(config);
         let caps = SourceCapabilities::default();
 
-        // 1GB 文件，8 连接
+        // 1GB file, 8 connections
         let size = 1024 * 1024 * 1024;
         let chunk_size = scheduler.calculate_chunk_size(size, 8, &caps);
-        // 目标：1GB / (8*12) = ~10.9MB，钳制在 4-64MB
+        // Goal: 1GB / (8*12) = ~10.9MB, clamped to 4-64MB
         assert!(chunk_size >= 4 * 1024 * 1024);
         assert!(chunk_size <= 64 * 1024 * 1024);
     }
@@ -215,5 +226,11 @@ mod tests {
         let config = DownloadConfig::default();
         let scheduler = DownloadScheduler::new(config);
         assert_eq!(scheduler.config.max_connections, 32);
+    }
+
+    #[test]
+    fn test_dry_run_default_enabled() {
+        let config = DownloadConfig::default();
+        assert!(config.dry_run, "dry_run should default to true");
     }
 }

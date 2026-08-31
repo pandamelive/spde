@@ -1,4 +1,4 @@
-//! HTTP(S) 高性能下载器 — 工作窃取式分片、动态并发、断点续传、自动重试
+﻿//! HTTP(S) 楂樻€ц兘涓嬭浇鍣?鈥?宸ヤ綔绐冨彇寮忓垎鐗囥€佸姩鎬佸苟鍙戙€佹柇鐐圭画浼犮€佽嚜鍔ㄩ噸璇?
 
 use super::*;
 use anyhow::{Context, Result};
@@ -15,7 +15,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 SPDE/0.6";
 
-/// HTTP(S) 下载器
+/// HTTP(S) 涓嬭浇鍣?
 pub struct HttpDownloader {
     client: Client,
 }
@@ -33,7 +33,7 @@ impl HttpDownloader {
         }
     }
 
-    /// 带自定义配置构建
+    /// 甯﹁嚜瀹氫箟閰嶇疆鏋勫缓
     pub fn with_config(proxy: &str, skip_tls: bool) -> Result<Self> {
         Ok(Self {
             client: Self::build_client(Some(proxy), skip_tls),
@@ -64,7 +64,7 @@ impl HttpDownloader {
         builder.build().unwrap_or_else(|_| Client::new())
     }
 
-    /// 根据任务参数获取或构建 client
+    /// 鏍规嵁浠诲姟鍙傛暟鑾峰彇鎴栨瀯寤?client
     fn client_for_task(&self, task: &DownloadTask) -> Client {
         if task.proxy.is_empty() && !task.skip_tls_verify && task.headers.is_empty() {
             self.client.clone()
@@ -102,10 +102,10 @@ impl DownloadBackend for HttpDownloader {
 
         let client = self.client_for_task(&task);
 
-        // 1. 探测文件大小和 Range 支持
+        // 1. 鎺㈡祴鏂囦欢澶у皬鍜?Range 鏀寔
         let (total_size, accept_ranges) = probe_file(&client, &task.uri, &task.headers).await?;
 
-        // 已存在且大小匹配 → 跳过（仅在开启断点续传时）
+        // 宸插瓨鍦ㄤ笖澶у皬鍖归厤 鈫?璺宠繃锛堜粎鍦ㄥ紑鍚柇鐐圭画浼犳椂锛?
         if task.resume && !task.dry_run {
             if let Ok(meta) = tokio::fs::metadata(&task.save_path).await {
                 if meta.len() == total_size && total_size > 0 {
@@ -132,7 +132,7 @@ impl DownloadBackend for HttpDownloader {
         let connections = task.effective_connections();
         let chunk_size = task.effective_chunk_size();
 
-        // 不支持 Range / 文件太小 / 单连接 → 单连接 fallback
+        // 涓嶆敮鎸?Range / 鏂囦欢澶皬 / 鍗曡繛鎺?鈫?鍗曡繛鎺?fallback
         let output = if !accept_ranges || connections <= 1 || total_size < chunk_size * 2 {
             download_single(
                 &client,
@@ -143,7 +143,7 @@ impl DownloadBackend for HttpDownloader {
             )
             .await
         } else {
-            // 工作窃取式多连接分片下载
+            // 宸ヤ綔绐冨彇寮忓杩炴帴鍒嗙墖涓嬭浇
             download_chunked(
                 &client,
                 &task,
@@ -185,9 +185,9 @@ impl DownloadBackend for HttpDownloader {
     }
 }
 
-// ──────────────────────────────────────────────
-// 文件探测
-// ──────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 鏂囦欢鎺㈡祴
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 async fn probe_file(
     client: &Client,
@@ -196,7 +196,7 @@ async fn probe_file(
 ) -> Result<(u64, bool)> {
     let mut errors: Vec<String> = Vec::new();
 
-    // 优先 GET bytes=0-0
+    // 浼樺厛 GET bytes=0-0
     for attempt in 0..3u32 {
         let mut req = client.get(url).header("Range", "bytes=0-0");
         for (k, v) in headers {
@@ -272,11 +272,11 @@ async fn probe_file(
     anyhow::bail!("failed to probe file size: {}", errors.join(" | "))
 }
 
-// ──────────────────────────────────────────────
-// 单连接下载（fallback + 断点续传）
-// ──────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 鍗曡繛鎺ヤ笅杞斤紙fallback + 鏂偣缁紶锛?
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-/// 单连接下载（无 Range 或单线程场景）
+/// 鍗曡繛鎺ヤ笅杞斤紙鏃?Range 鎴栧崟绾跨▼鍦烘櫙锛?
 async fn download_single(
     client: &Client,
     task: &DownloadTask,
@@ -286,7 +286,7 @@ async fn download_single(
 ) -> Result<DownloadOutput> {
     let deadline = task.timeout.map(|d| Instant::now() + d);
 
-    // 断点续传：沿用已有本地大小（resume=false 时从零开始）
+    // 鏂偣缁紶锛氭部鐢ㄥ凡鏈夋湰鍦板ぇ灏忥紙resume=false 鏃朵粠闆跺紑濮嬶級
     let local_size = if task.dry_run || !task.resume {
         0
     } else {
@@ -298,7 +298,7 @@ async fn download_single(
 
     let mut output = DownloadOutput {
         total_size,
-        // 断点续传时已下载字节从 local_size 开始，避免进度从0跳变
+        // 鏂偣缁紶鏃跺凡涓嬭浇瀛楄妭浠?local_size 寮€濮嬶紝閬垮厤杩涘害浠?璺冲彉
         downloaded_bytes: local_size,
         ..Default::default()
     };
@@ -338,14 +338,14 @@ async fn download_single(
     let dl_start = Instant::now();
     let mut last_progress = Instant::now();
     while let Some(chunk_res) = stream.next().await {
-        // 超时检查（循环开始时，保证后续迭代也会离开）
+        // 瓒呮椂妫€鏌ワ紙寰幆寮€濮嬫椂锛屼繚璇佸悗缁凯浠ｄ篃浼氱寮€锛?
         if let Some(d) = deadline {
             if Instant::now() >= d {
                 output.error_msg = Some("download timed out".to_string());
                 break;
             }
         }
-        // 暂停/取消检查
+        // 鏆傚仠/鍙栨秷妫€鏌?
         if let Some(ctrl) = &controller {
             if !ctrl.wait_if_paused().await {
                 anyhow::bail!("download cancelled by controller");
@@ -359,7 +359,7 @@ async fn download_single(
                 output.downloaded_bytes += chunk.len() as u64;
                 output.success_chunks += 1;
 
-                // 进度回调（与 file/ftp 后端一致：按 progress_interval 节流）
+                // 杩涘害鍥炶皟锛堜笌 file/ftp 鍚庣涓€鑷达細鎸?progress_interval 鑺傛祦锛?
                 if let Some(cb) = &progress {
                     if last_progress.elapsed() >= task.progress_interval {
                         let elapsed = dl_start.elapsed().as_secs_f64();
@@ -405,30 +405,30 @@ async fn download_single(
     Ok(output)
 }
 
-// ──────────────────────────────────────────────
-// 工作窃取式多连接分片下载
-// ──────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 宸ヤ綔绐冨彇寮忓杩炴帴鍒嗙墖涓嬭浇
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 struct SharedState {
-    /// 待下载分片队列 (start, end)
+    /// 寰呬笅杞藉垎鐗囬槦鍒?(start, end)
     queue: Mutex<VecDeque<(u64, u64)>>,
-    /// 已下载字节
+    /// 宸蹭笅杞藉瓧鑺?
     downloaded: AtomicU64,
-    /// 成功分片数
+    /// 鎴愬姛鍒嗙墖鏁?
     success_chunks: AtomicU32,
-    /// 失败分片数
+    /// 澶辫触鍒嗙墖鏁?
     failed_chunks: AtomicU32,
-    /// 活跃连接数
+    /// 娲昏穬杩炴帴鏁?
     active_conns: AtomicU32,
-    /// 总大小
+    /// 鎬诲ぇ灏?
     total_size: u64,
-    /// 开始时间
+    /// 寮€濮嬫椂闂?
     start: Instant,
-    /// 最后错误
+    /// 鏈€鍚庨敊璇?
     last_error: Mutex<Option<String>>,
-    /// 超时截止时间（None = 不限时）
+    /// 瓒呮椂鎴鏃堕棿锛圢one = 涓嶉檺鏃讹級
     deadline: Option<Instant>,
-    /// 速度滑动窗口：(时间戳, 已下载字节)，用于计算瞬时速度
+    /// 閫熷害婊戝姩绐楀彛锛?鏃堕棿鎴? 宸蹭笅杞藉瓧鑺?锛岀敤浜庤绠楃灛鏃堕€熷害
     speed_window: Mutex<VecDeque<(Instant, u64)>>,
 }
 
@@ -445,12 +445,12 @@ async fn download_chunked(
 ) -> Result<DownloadOutput> {
     let part_path = std::path::PathBuf::from(format!("{}.part", task.save_path.display()));
 
-    // resume=false 时丢弃已有 .part，避免残留旧数据（分片队列始终从 0 重建）
+    // resume=false 鏃朵涪寮冨凡鏈?.part锛岄伩鍏嶆畫鐣欐棫鏁版嵁锛堝垎鐗囬槦鍒楀缁堜粠 0 閲嶅缓锛?
     if !task.resume && !task.dry_run {
         tokio::fs::remove_file(&part_path).await.ok();
     }
 
-    // 预分配文件
+    // 棰勫垎閰嶆枃浠?
     if !task.dry_run {
         let f = File::options()
             .create(true)
@@ -463,7 +463,7 @@ async fn download_chunked(
         f.set_len(total_size).await.context("preallocate failed")?;
     }
 
-    // 构建分片队列
+    // 鏋勫缓鍒嗙墖闃熷垪
     let mut queue = VecDeque::new();
     let mut pos = 0u64;
     while pos < total_size {
@@ -486,7 +486,7 @@ async fn download_chunked(
         speed_window: Mutex::new(VecDeque::new()),
     });
 
-    // 启动进度报告
+    // 鍚姩杩涘害鎶ュ憡
     let progress_state = state.clone();
     let progress_task_id = task.task_id.clone();
     let progress_interval = task.progress_interval;
@@ -499,10 +499,10 @@ async fn download_chunked(
                 let dl = progress_state.downloaded.load(Ordering::Relaxed);
                 let elapsed = progress_state.start.elapsed().as_secs_f64();
 
-                // 瞬时速度：滑动窗口（最近5秒）内的字节差 / 时间差
+                // 鐬椂閫熷害锛氭粦鍔ㄧ獥鍙ｏ紙鏈€杩?绉掞級鍐呯殑瀛楄妭宸?/ 鏃堕棿宸?
                 let mut window = progress_state.speed_window.lock();
                 window.push_back((now, dl));
-                // 保留最近5秒的数据（至少保留2个点用于计算差值）
+                // 淇濈暀鏈€杩?绉掔殑鏁版嵁锛堣嚦灏戜繚鐣?涓偣鐢ㄤ簬璁＄畻宸€硷級
                 while window.len() > 2
                     && now.duration_since(window.front().unwrap().0).as_secs_f64() > 5.0
                 {
@@ -518,7 +518,7 @@ async fn download_chunked(
                         0
                     }
                 } else {
-                    // 窗口数据不足时回退到总平均速度
+                    // 绐楀彛鏁版嵁涓嶈冻鏃跺洖閫€鍒版€诲钩鍧囬€熷害
                     if elapsed > 0.0 {
                         (dl as f64 / elapsed) as u64
                     } else {
@@ -553,7 +553,7 @@ async fn download_chunked(
         None
     };
 
-    // 启动 worker
+    // 鍚姩 worker
     let mut handles = Vec::new();
     for _ in 0..connections {
         let c = client.clone();
@@ -569,7 +569,7 @@ async fn download_chunked(
         handles.push(tokio::spawn(async move {
             st.active_conns.fetch_add(1, Ordering::Relaxed);
             loop {
-                // 超时检查
+                // 瓒呮椂妫€鏌?
                 if let Some(d) = st.deadline {
                     if Instant::now() >= d {
                         let mut q = st.queue.lock();
@@ -581,13 +581,13 @@ async fn download_chunked(
                         break;
                     }
                 }
-                // 暂停/取消检查
+                // 鏆傚仠/鍙栨秷妫€鏌?
                 if let Some(ctrl) = &ctrl_clone {
                     if !ctrl.wait_if_paused().await {
                         break;
                     }
                 }
-                // 从队列取一个分片
+                // 浠庨槦鍒楀彇涓€涓垎鐗?
                 let range = {
                     let mut q = st.queue.lock();
                     q.pop_front()
@@ -596,7 +596,7 @@ async fn download_chunked(
                     break;
                 };
 
-                // 带重试下载该分片
+                // 甯﹂噸璇曚笅杞借鍒嗙墖
                 let mut ok = false;
                 for attempt in 0..retry {
                     match download_range(
@@ -632,7 +632,7 @@ async fn download_chunked(
                     st.success_chunks.fetch_add(1, Ordering::Relaxed);
                 } else {
                     st.failed_chunks.fetch_add(1, Ordering::Relaxed);
-                    // 失败的分片重新入队尾部，让其他 worker 尝试
+                    // 澶辫触鐨勫垎鐗囬噸鏂板叆闃熷熬閮紝璁╁叾浠?worker 灏濊瘯
                     let mut q = st.queue.lock();
                     q.push_back((start, end));
                 }
@@ -641,7 +641,7 @@ async fn download_chunked(
         }));
     }
 
-    // 等待所有 worker 完成
+    // 绛夊緟鎵€鏈?worker 瀹屾垚
     for h in handles {
         let _ = h.await;
     }
@@ -669,7 +669,7 @@ async fn download_chunked(
         ..Default::default()
     };
 
-    // 全部成功 → rename
+    // 鍏ㄩ儴鎴愬姛 鈫?rename
     if output.is_success && !task.dry_run {
         tokio::fs::rename(&part_path, &task.save_path)
             .await
@@ -679,7 +679,7 @@ async fn download_chunked(
     Ok(output)
 }
 
-/// 下载单个分片到文件指定偏移
+/// 涓嬭浇鍗曚釜鍒嗙墖鍒版枃浠舵寚瀹氬亸绉?
 #[allow(clippy::too_many_arguments)]
 async fn download_range(
     client: &Client,
@@ -741,7 +741,7 @@ async fn download_range(
 
         state.downloaded.fetch_add(chunk_len, Ordering::Relaxed);
 
-        // 简单速度限制：每 100ms 窗口内不超过 speed_limit/10 字节
+        // 绠€鍗曢€熷害闄愬埗锛氭瘡 100ms 绐楀彛鍐呬笉瓒呰繃 speed_limit/10 瀛楄妭
         if speed_limit > 0 {
             window_bytes += chunk_len;
             let limit_per_window = speed_limit / 10;
@@ -761,9 +761,9 @@ async fn download_range(
     Ok(())
 }
 
-// ──────────────────────────────────────────────
-// 新架构后端：基于 DownloadScheduler + HttpChunkDownloader
-// ──────────────────────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 鏂版灦鏋勫悗绔細鍩轰簬 DownloadScheduler + HttpChunkDownloader
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 use crate::domain::DownloadConfig;
 use crate::infra::http::downloader::HttpChunkDownloader;
@@ -772,7 +772,7 @@ use crate::service::scheduler::DownloadScheduler;
 use pandanetos::domain::{DownloadProgress, DownloadSource};
 use tokio::sync::mpsc;
 
-/// 新架构 HTTP 下载后端（serve 模式使用）
+/// 鏂版灦鏋?HTTP 涓嬭浇鍚庣锛坰erve 妯″紡浣跨敤锛?
 pub struct ChunkedHttpDownloader;
 
 impl Default for ChunkedHttpDownloader {
@@ -806,16 +806,16 @@ impl DownloadBackend for ChunkedHttpDownloader {
         let start = Instant::now();
         let task_id = task.task_id.clone();
 
-        // 1. 构建下载源
+        // 1. 鏋勫缓涓嬭浇婧?
         let source: Box<dyn DownloadSource> = Box::new(HttpSource::new(task.uri.clone()));
 
-        // 2. 确保保存目录存在
+        // 2. 纭繚淇濆瓨鐩綍瀛樺湪
         let save_path = task.save_path.clone();
         if let Some(parent) = save_path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
 
-        // 3. 构建下载配置
+        // 3. 鏋勫缓涓嬭浇閰嶇疆
         let config = DownloadConfig {
             max_connections: task.effective_connections(),
             min_connections: 1,
@@ -832,19 +832,20 @@ impl DownloadBackend for ChunkedHttpDownloader {
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default(),
+            dry_run: task.dry_run,
         };
 
-        // 4. 构建分片下载器和调度器
+        // 4. 鏋勫缓鍒嗙墖涓嬭浇鍣ㄥ拰璋冨害鍣?
         let chunk_downloader = Arc::new(HttpChunkDownloader::new(
             task.skip_tls_verify,
             config.timeout_secs,
         ));
         let scheduler = DownloadScheduler::new(config);
 
-        // 5. 进度通道
+        // 5. 杩涘害閫氶亾
         let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(256);
 
-        // 6. 后台任务：接收进度并转发给 ProgressCallback
+        // 6. 鍚庡彴浠诲姟锛氭帴鏀惰繘搴﹀苟杞彂缁?ProgressCallback
         let progress_clone = progress.clone();
         let task_id_clone = task_id.clone();
         let progress_handle = tokio::spawn(async move {
@@ -868,15 +869,15 @@ impl DownloadBackend for ChunkedHttpDownloader {
             }
         });
 
-        // 7. 执行下载（scheduler 内部创建 writer 和 .part 文件）
+        // 7. 鎵ц涓嬭浇锛坰cheduler 鍐呴儴鍒涘缓 writer 鍜?.part 鏂囦欢锛?
         let result = scheduler
             .download(source, chunk_downloader, save_path.clone(), progress_tx)
             .await;
 
-        // 8. 等待进度转发完成
+        // 8. 绛夊緟杩涘害杞彂瀹屾垚
         drop(progress_handle);
 
-        // 9. 转换结果
+        // 9. 杞崲缁撴灉
         let elapsed = start.elapsed().as_secs_f64();
         match result {
             Ok(r) => {

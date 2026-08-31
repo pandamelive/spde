@@ -1,9 +1,9 @@
-//! 新下载执行模块（基于 DownloadScheduler 的智能下载架构）
+﻿//! 鏂颁笅杞芥墽琛屾ā鍧楋紙鍩轰簬 DownloadScheduler 鐨勬櫤鑳戒笅杞芥灦鏋勶級
 //!
-//! 使用新的四层架构：domain → service → infra → cli
-//! 支持多源并发分片、自适应连接数、断点续传、镜像发现、进度平滑。
+//! 浣跨敤鏂扮殑鍥涘眰鏋舵瀯锛歞omain 鈫?service 鈫?infra 鈫?cli
+//! 鏀寔澶氭簮骞跺彂鍒嗙墖銆佽嚜閫傚簲杩炴帴鏁般€佹柇鐐圭画浼犮€侀暅鍍忓彂鐜般€佽繘搴﹀钩婊戙€?
 //!
-//! 与旧下载器（`downloader/`）并存，通过配置开关切换。
+//! 涓庢棫涓嬭浇鍣紙`downloader/`锛夊苟瀛橈紝閫氳繃閰嶇疆寮€鍏冲垏鎹€?
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -32,7 +32,7 @@ use crate::infra::torrent::source::TorrentSource;
 use crate::service::adaptive::{AdaptiveConfig, AdaptiveController};
 use crate::service::scheduler::DownloadScheduler;
 
-/// 新下载任务执行结果
+/// 鏂颁笅杞戒换鍔℃墽琛岀粨鏋?
 pub struct NewDownloadResult {
     pub dispatch_id: Uuid,
     pub success: bool,
@@ -42,26 +42,26 @@ pub struct NewDownloadResult {
     pub error_msg: Option<String>,
 }
 
-/// 把 Option<Duration> 转换成 u64 秒数
+/// 鎶?Option<Duration> 杞崲鎴?u64 绉掓暟
 fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
     d.map(|d| d.as_secs()).unwrap_or(1800)
 }
 
-/// 执行新架构下载任务
+/// 鎵ц鏂版灦鏋勪笅杞戒换鍔?
 ///
-/// # 参数
-/// - `url`: 下载 URL
-/// - `filename`: 保存文件名
-/// - `params`: 任务参数
-/// - `dispatch_id`: 调度 ID
-/// - `task_name`: 任务名称
-/// - `ws`: WebSocket 客户端（用于汇报进度）
-/// - `active`: 活跃任务计数
-/// - `bytes_total`: 总下载字节计数
-/// - `last_error`: 最后错误信息
+/// # 鍙傛暟
+/// - `url`: 涓嬭浇 URL
+/// - `filename`: 淇濆瓨鏂囦欢鍚?
+/// - `params`: 浠诲姟鍙傛暟
+/// - `dispatch_id`: 璋冨害 ID
+/// - `task_name`: 浠诲姟鍚嶇О
+/// - `ws`: WebSocket 瀹㈡埛绔紙鐢ㄤ簬姹囨姤杩涘害锛?
+/// - `active`: 娲昏穬浠诲姟璁℃暟
+/// - `bytes_total`: 鎬讳笅杞藉瓧鑺傝鏁?
+/// - `last_error`: 鏈€鍚庨敊璇俊鎭?
 ///
-/// # 返回
-/// 下载结果
+/// # 杩斿洖
+/// 涓嬭浇缁撴灉
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_download(
     url: &str,
@@ -77,17 +77,17 @@ pub async fn execute_download(
     let started = Instant::now();
     active.fetch_add(1, Ordering::Relaxed);
 
-    // 通知 PK 任务开始
+    // 閫氱煡 PK 浠诲姟寮€濮?
     ws.send_task_started(dispatch_id).await;
 
-    // 创建保存目录
+    // 鍒涘缓淇濆瓨鐩綍
     tokio::fs::create_dir_all(&params.save_dir).await?;
     let save_path = params.save_dir.join(filename);
 
-    // 超时转换
+    // 瓒呮椂杞崲
     let timeout_secs = duration_to_secs(params.timeout);
 
-    // 构建下载配置
+    // 鏋勫缓涓嬭浇閰嶇疆
     let download_config = DownloadConfig {
         max_connections: params.connections,
         min_connections: 1,
@@ -101,19 +101,20 @@ pub async fn execute_download(
         enable_adaptive: true,
         enable_progress_smoothing: true,
         save_dir: params.save_dir.clone(),
+        dry_run: params.dry_run,
     };
 
-    // 创建下载调度器
+    // 鍒涘缓涓嬭浇璋冨害鍣?
     let scheduler = DownloadScheduler::new(download_config);
 
-    // 协议路由：根据 URL 协议类型选择对应的 Source 和 Downloader
+    // 鍗忚璺敱锛氭牴鎹?URL 鍗忚绫诲瀷閫夋嫨瀵瑰簲鐨?Source 鍜?Downloader
     let is_file = FileSource::is_file_uri(url);
     let is_ftp = FtpSource::is_ftp_uri(url);
     let is_ssh = SshSource::is_ssh_uri(url);
     let is_torrent = TorrentSource::is_torrent_uri(url);
     let is_http = url.starts_with("http://") || url.starts_with("https://");
 
-    // 注册镜像发现器（仅 HTTP 协议需要，File 协议不需要）
+    // 娉ㄥ唽闀滃儚鍙戠幇鍣紙浠?HTTP 鍗忚闇€瑕侊紝File 鍗忚涓嶉渶瑕侊級
     let mirror_bus = scheduler.mirror_bus();
     if is_http {
         mirror_bus
@@ -121,17 +122,17 @@ pub async fn execute_download(
             .await;
     }
 
-    // 创建源和下载器（协议无关的 Box<dyn DownloadSource> 和 Arc<dyn ChunkDownloader>）
+    // 鍒涘缓婧愬拰涓嬭浇鍣紙鍗忚鏃犲叧鐨?Box<dyn DownloadSource> 鍜?Arc<dyn ChunkDownloader>锛?
     let source: Box<dyn pandanetos::domain::DownloadSource>;
     let downloader: Arc<dyn pandanetos::domain::ChunkDownloader>;
 
     if is_file {
-        // File 协议
+        // File 鍗忚
         let file_source = FileSource::from_uri(url)?;
         source = Box::new(file_source);
         downloader = Arc::new(FileChunkDownloader::new());
     } else if is_ftp {
-        // FTP/FTPS 协议
+        // FTP/FTPS 鍗忚
         let ftp_source = FtpSource::new(url)?;
         source = Box::new(ftp_source);
         downloader = Arc::new(FtpChunkDownloader::new(
@@ -139,12 +140,12 @@ pub async fn execute_download(
             timeout_secs,
         ));
     } else if is_ssh {
-        // SSH/SFTP/SCP 协议
+        // SSH/SFTP/SCP 鍗忚
         let ssh_source = SshSource::new(url)?;
         source = Box::new(ssh_source);
         downloader = Arc::new(SshChunkDownloader::new(timeout_secs));
     } else if is_torrent {
-        // BitTorrent 协议（磁力链接/种子文件）
+        // BitTorrent 鍗忚锛堢鍔涢摼鎺?绉嶅瓙鏂囦欢锛?
         let save_dir = save_path
             .parent()
             .map(|p| p.to_path_buf())
@@ -153,21 +154,21 @@ pub async fn execute_download(
         source = Box::new(torrent_source);
         downloader = Arc::new(TorrentChunkDownloader::new(timeout_secs));
     } else if is_http {
-        // HTTP/HTTPS 协议
+        // HTTP/HTTPS 鍗忚
         source = Box::new(HttpSource::new(url.to_string()));
         downloader = Arc::new(HttpChunkDownloader::new(
             params.skip_tls_verify,
             timeout_secs,
         ));
     } else {
-        // 暂不支持的协议
+        // 鏆備笉鏀寔鐨勫崗璁?
         anyhow::bail!("unsupported protocol for new scheduler: {}", url);
     }
 
-    // 创建进度通道
+    // 鍒涘缓杩涘害閫氶亾
     let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
 
-    // 创建自适应控制器
+    // 鍒涘缓鑷€傚簲鎺у埗鍣?
     let adaptive_config = AdaptiveConfig {
         initial_connections: 2,
         min_connections: 1,
@@ -182,12 +183,12 @@ pub async fn execute_download(
     };
     let _adaptive = AdaptiveController::new(adaptive_config);
 
-    // 进度转发任务：从通道接收进度，推送给 PK
+    // 杩涘害杞彂浠诲姟锛氫粠閫氶亾鎺ユ敹杩涘害锛屾帹閫佺粰 PK
     let ws_clone = ws.clone();
     let task_name_clone = task_name.to_string();
     let progress_handle = tokio::spawn(async move {
         while let Some(progress) = progress_rx.recv().await {
-            // 计算百分比（DownloadProgress 没有 percent 字段，需要计算）
+            // 璁＄畻鐧惧垎姣旓紙DownloadProgress 娌℃湁 percent 瀛楁锛岄渶瑕佽绠楋級
             let percent = if progress.total_bytes > 0 {
                 progress.downloaded_bytes as f64 / progress.total_bytes as f64 * 100.0
             } else {
@@ -210,12 +211,12 @@ pub async fn execute_download(
         }
     });
 
-    // 执行下载
+    // 鎵ц涓嬭浇
     let result = scheduler
         .download(source, downloader, save_path.clone(), progress_tx)
         .await;
 
-    // 等待进度转发完成（progress_rx 已经被 move 到 progress_handle 闭包中）
+    // 绛夊緟杩涘害杞彂瀹屾垚锛坧rogress_rx 宸茬粡琚?move 鍒?progress_handle 闂寘涓級
     let _ = progress_handle.await;
 
     let elapsed = started.elapsed().as_secs_f64();
@@ -244,7 +245,7 @@ pub async fn execute_download(
 
     let status = if success { "success" } else { "failed" };
 
-    // 汇报任务结果
+    // 姹囨姤浠诲姟缁撴灉
     ws.send_task_report(TaskReportParams {
         dispatch_id: Some(dispatch_id),
         task_id: None,
@@ -256,7 +257,7 @@ pub async fn execute_download(
         elapsed_secs: elapsed,
         avg_speed_mbps: avg_speed_mbps,
         status,
-        success_chunks: 0, // 新架构后续补充
+        success_chunks: 0, // 鏂版灦鏋勫悗缁ˉ鍏?
         failed_chunks: 0,
         error_msg: error_msg.as_deref(),
     })
@@ -274,10 +275,10 @@ pub async fn execute_download(
     })
 }
 
-/// 检查是否应该使用新下载器
+/// 妫€鏌ユ槸鍚﹀簲璇ヤ娇鐢ㄦ柊涓嬭浇鍣?
 ///
-/// 已完全切换到新架构，始终返回 true。
-/// 保留此函数是为了兼容现有调用点，后续可直接移除。
+/// 宸插畬鍏ㄥ垏鎹㈠埌鏂版灦鏋勶紝濮嬬粓杩斿洖 true銆?
+/// 淇濈暀姝ゅ嚱鏁版槸涓轰簡鍏煎鐜版湁璋冪敤鐐癸紝鍚庣画鍙洿鎺ョЩ闄ゃ€?
 pub fn should_use_new_downloader(
     _url: &str,
     _task_overrides: &TaskOverrides,

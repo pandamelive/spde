@@ -1,4 +1,4 @@
-use serde::Deserialize;
+﻿use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -60,7 +60,7 @@ pub struct GlobalConfig {
     pub skip_tls_verify: bool,
     #[serde(default = "default_connections")]
     pub connections_per_file: u32,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub dry_run: bool,
     #[serde(default)]
     pub use_new_downloader: Option<bool>,
@@ -80,7 +80,7 @@ impl Default for OutputConfig {
     }
 }
 
-/// 任务级参数覆盖（配置或主控下发，None 时回退到 global 段默认值）
+/// 浠诲姟绾у弬鏁拌鐩栵紙閰嶇疆鎴栦富鎺т笅鍙戯紝None 鏃跺洖閫€鍒?global 娈甸粯璁ゅ€硷級
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TaskOverrides {
     #[serde(default)]
@@ -101,7 +101,7 @@ pub struct TaskOverrides {
     pub use_new_downloader: Option<bool>,
 }
 
-/// 覆盖后的任务级下载参数
+/// 瑕嗙洊鍚庣殑浠诲姟绾т笅杞藉弬鏁?
 #[derive(Debug, Clone)]
 pub struct TaskParams {
     pub connections: u32,
@@ -113,13 +113,13 @@ pub struct TaskParams {
     pub timeout: Option<std::time::Duration>,
 }
 
-/// 解析任务级参数：任务覆盖优先，未覆盖项回退 global 段默认值
+/// 瑙ｆ瀽浠诲姟绾у弬鏁帮細浠诲姟瑕嗙洊浼樺厛锛屾湭瑕嗙洊椤瑰洖閫€ global 娈甸粯璁ゅ€?
 pub fn resolve_task_params(
     overrides: &TaskOverrides,
     cfg: &SpdeConfig,
     base_dir: &Path,
 ) -> TaskParams {
-    // connections=0 时强制单连接以兼容旧配置语义
+    // connections=0 鏃跺己鍒跺崟杩炴帴浠ュ吋瀹规棫閰嶇疆璇箟
     let connections = overrides
         .connections_per_file
         .unwrap_or(cfg.global.connections_per_file)
@@ -135,7 +135,7 @@ pub fn resolve_task_params(
         .unwrap_or(&cfg.output.save_path);
     let save_dir = resolve_save_dir(base_dir, save_path);
     let resume = cfg.global.resume;
-    // 超时秒数 > 0 才生效；0 视为不限时
+    // 瓒呮椂绉掓暟 > 0 鎵嶇敓鏁堬紱0 瑙嗕负涓嶉檺鏃?
     let timeout_secs = overrides.timeout.unwrap_or(cfg.global.timeout);
     let timeout = if timeout_secs > 0 {
         Some(std::time::Duration::from_secs(timeout_secs))
@@ -181,7 +181,7 @@ pub struct TaskItem {
     pub task_id: Option<Uuid>,
     #[serde(default)]
     pub dispatch_id: Option<Uuid>,
-    // ── 任务级下载参数覆盖（None 时用 global 段默认值） ──
+    // 鈹€鈹€ 浠诲姟绾т笅杞藉弬鏁拌鐩栵紙None 鏃剁敤 global 娈甸粯璁ゅ€硷級 鈹€鈹€
     #[serde(flatten)]
     #[serde(default)]
     pub overrides: TaskOverrides,
@@ -223,7 +223,7 @@ mod tests {
     use std::time::Duration;
 
     fn sample_cfg() -> SpdeConfig {
-        // 通过完整 YAML 反序列化，验证 flatten 后的 TaskItem 兼容旧配置（不含 overrides 字段）
+        // 閫氳繃瀹屾暣 YAML 鍙嶅簭鍒楀寲锛岄獙璇?flatten 鍚庣殑 TaskItem 鍏煎鏃ч厤缃紙涓嶅惈 overrides 瀛楁锛?
         let yaml = r#"
 global:
   max_concurrent: 4
@@ -256,12 +256,12 @@ direct_tasks:
         let cfg = sample_cfg();
         assert_eq!(cfg.direct_tasks.len(), 2);
 
-        // 无覆盖字段的任务 -> TaskOverrides 全 None
+        // 鏃犺鐩栧瓧娈电殑浠诲姟 -> TaskOverrides 鍏?None
         let t0 = &cfg.direct_tasks[0];
         assert!(t0.overrides.connections_per_file.is_none());
         assert!(t0.overrides.save_path.is_none());
 
-        // 有覆盖字段的任务 -> 平铺字段进入 TaskOverrides
+        // 鏈夎鐩栧瓧娈电殑浠诲姟 -> 骞抽摵瀛楁杩涘叆 TaskOverrides
         let t1 = &cfg.direct_tasks[1];
         assert_eq!(t1.overrides.connections_per_file, Some(16));
         assert_eq!(t1.overrides.retry_times, Some(9));
@@ -279,9 +279,9 @@ direct_tasks:
         assert_eq!(p.retry, 3);
         assert!(!p.dry_run);
         assert!(!p.skip_tls_verify);
-        // 相对 save_path 基于 base_dir
+        // 鐩稿 save_path 鍩轰簬 base_dir
         assert_eq!(p.save_dir, base.join("./download"));
-        // 未覆盖项回退 global 段默认值
+        // 鏈鐩栭」鍥為€€ global 娈甸粯璁ゅ€?
         assert!(p.resume);
         assert_eq!(p.timeout, Some(Duration::from_secs(1800)));
     }
@@ -295,16 +295,16 @@ direct_tasks:
         assert_eq!(p.retry, 9);
         assert!(p.dry_run);
         assert!(p.skip_tls_verify);
-        // 绝对 save_path 直接使用
+        // 缁濆 save_path 鐩存帴浣跨敤
         assert_eq!(p.save_dir, PathBuf::from("/abs/dir"));
-        // 任务级 timeout 覆盖生效
+        // 浠诲姟绾?timeout 瑕嗙洊鐢熸晥
         assert_eq!(p.timeout, Some(Duration::from_secs(7200)));
         assert!(p.resume);
     }
 
     #[test]
     fn resolve_timeout_zero_disables() {
-        // timeout=0 视为不限时
+        // timeout=0 瑙嗕负涓嶉檺鏃?
         let yaml = r#"
 global:
   max_concurrent: 4
@@ -327,7 +327,7 @@ direct_tasks:
 
     #[test]
     fn resolve_connections_zero_clamps_to_one() {
-        // connections=0（或未配置时恰好为 0）强制单连接，兼容旧配置语义
+        // connections=0锛堟垨鏈厤缃椂鎭板ソ涓?0锛夊己鍒跺崟杩炴帴锛屽吋瀹规棫閰嶇疆璇箟
         let yaml = r#"
 global:
   max_concurrent: 4
