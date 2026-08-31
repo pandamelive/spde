@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 
 [package]
 name = "spde"
-version = "1.2.1"
+version = "1.2.3"
 edition = "2021"
 description = "SPDE Super-Download-Engine 统一下载中心，单点CLI版本"
 license = "MIT"
