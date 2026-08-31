@@ -60,7 +60,7 @@ pub struct GlobalConfig {
     pub skip_tls_verify: bool,
     #[serde(default = "default_connections")]
     pub connections_per_file: u32,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub dry_run: bool,
     #[serde(default)]
     pub use_new_downloader: Option<bool>,
@@ -181,7 +181,7 @@ pub struct TaskItem {
     pub task_id: Option<Uuid>,
     #[serde(default)]
     pub dispatch_id: Option<Uuid>,
-    // ── 任务级下载参数覆盖（None 时用 global 段默认值） ──
+    // —— 任务级下载参数覆盖（None 时用 global 段默认值） ——
     #[serde(flatten)]
     #[serde(default)]
     pub overrides: TaskOverrides,
@@ -223,7 +223,7 @@ mod tests {
     use std::time::Duration;
 
     fn sample_cfg() -> SpdeConfig {
-        // 通过完整 YAML 反序列化，验证 flatten 后的 TaskItem 兼容旧配置（不含 overrides 字段）
+        // 通过完整 YAML 反序列化，验证 flatten 后的 TaskItem 兼容无配置（不含 overrides 字段）
         let yaml = r#"
 global:
   max_concurrent: 4
@@ -261,7 +261,7 @@ direct_tasks:
         assert!(t0.overrides.connections_per_file.is_none());
         assert!(t0.overrides.save_path.is_none());
 
-        // 有覆盖字段的任务 -> 平铺字段进入 TaskOverrides
+        // 有覆盖字段的任务 -> 扁平字段进入 TaskOverrides
         let t1 = &cfg.direct_tasks[1];
         assert_eq!(t1.overrides.connections_per_file, Some(16));
         assert_eq!(t1.overrides.retry_times, Some(9));

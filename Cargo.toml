@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 name = "spde"
 version = "1.2.1"
 edition = "2021"
-description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
+description = "SPDE Super-Download-Engine 统一下载中心，单点CLI版本"
 license = "MIT"
 
 [dependencies]
@@ -50,12 +50,15 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
-openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
 default = ["ftp", "torrent"]
 ftp = ["dep:suppaftp"]
 torrent = ["dep:librqbit"]
+
+# Linux musl 交叉编译需要 vendored OpenSSL（librqbit 通过 crypto-hash 依赖 openssl）
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 tempfile = "3"

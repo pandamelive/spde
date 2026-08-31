@@ -185,9 +185,9 @@ impl DownloadBackend for HttpDownloader {
     }
 }
 
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // 文件探测
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 
 async fn probe_file(
     client: &Client,
@@ -272,9 +272,9 @@ async fn probe_file(
     anyhow::bail!("failed to probe file size: {}", errors.join(" | "))
 }
 
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // 单连接下载（fallback + 断点续传）
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 
 /// 单连接下载（无 Range 或单线程场景）
 async fn download_single(
@@ -298,7 +298,7 @@ async fn download_single(
 
     let mut output = DownloadOutput {
         total_size,
-        // 断点续传时已下载字节从 local_size 开始，避免进度从0跳变
+        // 断点续传时已下载字节从 local_size 开始，避免进度从 跳变
         downloaded_bytes: local_size,
         ..Default::default()
     };
@@ -338,7 +338,7 @@ async fn download_single(
     let dl_start = Instant::now();
     let mut last_progress = Instant::now();
     while let Some(chunk_res) = stream.next().await {
-        // 超时检查（循环开始时，保证后续迭代也会离开）
+        // 超时检查（循环开始时，保证后续迭代也会退出）
         if let Some(d) = deadline {
             if Instant::now() >= d {
                 output.error_msg = Some("download timed out".to_string());
@@ -405,9 +405,9 @@ async fn download_single(
     Ok(output)
 }
 
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // 工作窃取式多连接分片下载
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 
 struct SharedState {
     /// 待下载分片队列 (start, end)
@@ -428,7 +428,7 @@ struct SharedState {
     last_error: Mutex<Option<String>>,
     /// 超时截止时间（None = 不限时）
     deadline: Option<Instant>,
-    /// 速度滑动窗口：(时间戳, 已下载字节)，用于计算瞬时速度
+    /// 速度滑动窗口（时间戳, 已下载字节），用于计算瞬时速度
     speed_window: Mutex<VecDeque<(Instant, u64)>>,
 }
 
@@ -499,10 +499,10 @@ async fn download_chunked(
                 let dl = progress_state.downloaded.load(Ordering::Relaxed);
                 let elapsed = progress_state.start.elapsed().as_secs_f64();
 
-                // 瞬时速度：滑动窗口（最近5秒）内的字节差 / 时间差
+                // 瞬时速度：滑动窗口（最近 秒）内的字节差 / 时间差
                 let mut window = progress_state.speed_window.lock();
                 window.push_back((now, dl));
-                // 保留最近5秒的数据（至少保留2个点用于计算差值）
+                // 保留最近 秒的数据（至少保留 个点用于计算差值）
                 while window.len() > 2
                     && now.duration_since(window.front().unwrap().0).as_secs_f64() > 5.0
                 {
@@ -761,9 +761,9 @@ async fn download_range(
     Ok(())
 }
 
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // 新架构后端：基于 DownloadScheduler + HttpChunkDownloader
-// ──────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 
 use crate::domain::DownloadConfig;
 use crate::infra::http::downloader::HttpChunkDownloader;
@@ -832,6 +832,7 @@ impl DownloadBackend for ChunkedHttpDownloader {
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default(),
+            dry_run: task.dry_run,
         };
 
         // 4. 构建分片下载器和调度器
