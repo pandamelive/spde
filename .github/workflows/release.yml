@@ -21,4 +21,4 @@ jobs:
       downstream_repo: pcdn-keeper
       version: ${{ inputs.version }}
     secrets:
-      PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_DOWNSTREAM }}
+      PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_PCDNKEEPER }}
