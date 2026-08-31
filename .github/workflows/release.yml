@@ -16,4 +16,5 @@ jobs:
       project_name: SPDE
       dispatch_downstream: true
       downstream_repo: pcdn-keeper
-    secrets: inherit
+    secrets:
+      PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_DOWNSTREAM }}
