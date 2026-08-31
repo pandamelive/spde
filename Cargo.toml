@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 name = "spde"
 version = "1.2.1"
 edition = "2021"
-description = "SPDE Super‑Download‑Engine 统一下载中心，单点CLI版本"
+description = "SPDE Super-Download-Engine 统一下载中心，单点CLI版本"
 license = "MIT"
 
 [dependencies]
@@ -50,7 +50,6 @@ parking_lot = "0.12"
 futures-lite = "2"
 suppaftp = { version = "5", optional = true, features = ["async"] }
 librqbit = { version = "9", optional = true }
-openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
 default = ["ftp", "torrent"]
