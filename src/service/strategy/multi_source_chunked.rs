@@ -121,22 +121,23 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
         progress_smoother.set_active_connections(initial_workers);
         progress_smoother.force_report().await;
 
+        // 启动 worker
+        let mut worker_handles = Vec::new();
+        let active_workers = Arc::new(std::sync::atomic::AtomicU32::new(initial_workers));
+
         // 启动进度汇报 task（定期从 smoother 发送）
         let progress_smoother_clone = progress_smoother.clone();
         let cancel_clone = cancel.clone();
+        let active_workers_clone = active_workers.clone();
         let progress_handle = tokio::spawn(async move {
             while !cancel_clone.is_cancelled() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 // 同步活跃连接数
-                let active = active_workers.load(std::sync::atomic::Ordering::Relaxed);
+                let active = active_workers_clone.load(std::sync::atomic::Ordering::Relaxed);
                 progress_smoother_clone.set_active_connections(active);
                 progress_smoother_clone.report().await;
             }
         });
-
-        // 启动 worker
-        let mut worker_handles = Vec::new();
-        let active_workers = Arc::new(std::sync::atomic::AtomicU32::new(initial_workers));
 
         for worker_id in 0..initial_workers {
             let handle = spawn_worker(
