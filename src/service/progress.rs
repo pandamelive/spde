@@ -112,10 +112,12 @@ impl ProgressSmoother {
     }
 
     /// 计算滑动窗口瞬时速度（去掉最高最低取平均）
+    /// 如果窗口速度为0，回退到总平均速度
     async fn calculate_window_speed(&self) -> u64 {
         let history = self.speed_history.lock().await;
         if history.len() < 2 {
-            return 0;
+            // 采样点不足时，回退到总平均速度
+            return self.total_average_speed();
         }
 
         // 计算每个采样间隔的速度
@@ -127,13 +129,15 @@ impl ProgressSmoother {
             let db = history[i]
                 .downloaded_bytes
                 .saturating_sub(history[i - 1].downloaded_bytes);
-            if dt.as_secs_f64() > 0.0 {
+            // 最小时间间隔 50ms，避免时间戳间隔过小导致速度计算异常
+            if dt.as_secs_f64() >= 0.05 {
                 speeds.push((db as f64 / dt.as_secs_f64()) as u64);
             }
         }
 
         if speeds.is_empty() {
-            return 0;
+            // 没有有效采样点时，回退到总平均速度
+            return self.total_average_speed();
         }
 
         // 去掉最高最低（如果有 3 个以上）
@@ -144,8 +148,31 @@ impl ProgressSmoother {
         }
 
         // 取平均
-        let sum: u64 = speeds.iter().sum();
-        sum / speeds.len() as u64
+        let window_speed = {
+            let sum: u64 = speeds.iter().sum();
+            sum / speeds.len() as u64
+        };
+
+        // 如果窗口速度为0但已下载字节>0，回退到总平均速度
+        if window_speed == 0 {
+            let avg = self.total_average_speed();
+            if avg > 0 {
+                return avg;
+            }
+        }
+
+        window_speed
+    }
+
+    /// 计算总平均速度（已下载字节 / 已用时间）
+    fn total_average_speed(&self) -> u64 {
+        let elapsed = self.start_time.elapsed().as_secs_f64();
+        let downloaded = self.downloaded_bytes.load(Ordering::Relaxed);
+        if elapsed > 1.0 && downloaded > 0 {
+            (downloaded as f64 / elapsed) as u64
+        } else {
+            0
+        }
     }
 
     /// 更新 EMA 平滑速度
@@ -158,8 +185,18 @@ impl ProgressSmoother {
     /// 生成当前进度快照
     async fn snapshot(&self) -> DownloadProgress {
         let downloaded = self.downloaded_bytes.load(Ordering::Relaxed);
-        let speed = self.ema_speed.load(Ordering::Relaxed);
+        let mut speed = self.ema_speed.load(Ordering::Relaxed);
         let active = self.active_connections.load(Ordering::Relaxed) as u32;
+
+        // 速度兜底：如果 EMA 速度为0但已下载字节>0且已过2秒，用总平均速度
+        if speed == 0 && downloaded > 0 {
+            let avg = self.total_average_speed();
+            if avg > 0 {
+                speed = avg;
+                // 同步更新 EMA，避免下次还是0
+                self.ema_speed.store(avg, Ordering::Relaxed);
+            }
+        }
 
         DownloadProgress {
             downloaded_bytes: downloaded,

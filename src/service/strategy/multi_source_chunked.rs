@@ -108,8 +108,11 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
         }
 
         // 确定初始连接数
+        // 优化：不依赖 sources.len()，直接用 max_connections 的一半（向上取整）
+        // 确保至少有 2 个连接（除非 max_connections=1）
         let initial_workers = if self.initial_connections == 0 {
-            (sources.len() as u32 * 4).clamp(self.min_connections, self.max_connections)
+            let target = (self.max_connections + 1) / 2; // max_connections 的一半
+            target.clamp(self.min_connections.max(2), self.max_connections)
         } else {
             self.initial_connections
                 .clamp(self.min_connections, self.max_connections)
@@ -124,6 +127,9 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
         let progress_handle = tokio::spawn(async move {
             while !cancel_clone.is_cancelled() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                // 同步活跃连接数
+                let active = active_workers.load(std::sync::atomic::Ordering::Relaxed);
+                progress_smoother_clone.set_active_connections(active);
                 progress_smoother_clone.report().await;
             }
         });
@@ -209,9 +215,11 @@ fn spawn_worker(
     progress_smoother: Arc<ProgressSmoother>,
     downloader: Arc<dyn ChunkDownloader>,
     cancel: CancellationToken,
-    _active_workers: Arc<std::sync::atomic::AtomicU32>,
+    active_workers: Arc<std::sync::atomic::AtomicU32>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // worker 启动时计数+1
+        active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         while !cancel.is_cancelled() && !chunk_scheduler.is_all_completed() {
             // 取一个分片
             let chunk = match chunk_scheduler.next_chunk().await {
