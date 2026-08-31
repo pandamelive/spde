@@ -363,6 +363,36 @@ git push origin v1.1.1
 
 ---
 
+## 开发指南
+
+### 环境要求
+
+- Rust 1.75+
+- PandaNetOS 标准库（同级目录）
+
+### 构建
+
+```bash
+cargo build --release
+```
+
+### 测试
+
+```bash
+cargo test --all
+```
+
+### 合规检查
+
+```bash
+bash ../PandaNetOS/scripts/check_compliance.sh .
+```
+
+## 贡献指南
+
+欢迎提交 Issue 和 Pull Request。提交前请确保通过合规检查。
+
+
 ## 许可证
 
 MIT
