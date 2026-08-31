@@ -1,9 +1,12 @@
 name: Release SPDE
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 1.2.4）'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,5 +19,6 @@ jobs:
       project_name: SPDE
       dispatch_downstream: true
       downstream_repo: pcdn-keeper
+      version: ${{ inputs.version }}
     secrets:
       PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_DOWNSTREAM }}
