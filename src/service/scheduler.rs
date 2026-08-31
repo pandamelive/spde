@@ -119,8 +119,7 @@ impl DownloadScheduler {
             Arc::new(crate::infra::disk::null_writer::NullChunkWriter::new())
         } else {
             Arc::new(
-                crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone())
-                    .await?,
+                crate::infra::disk::file_writer::FileChunkWriter::open(part_path.clone()).await?,
             )
         };
 
@@ -142,10 +141,7 @@ impl DownloadScheduler {
             tokio::fs::rename(&part_path, &save_path)
                 .await
                 .map_err(|e| {
-                    CoreError::Internal(format!(
-                        "rename {:?} -> {:?}: {}",
-                        part_path, save_path, e
-                    ))
+                    CoreError::Internal(format!("rename {:?} -> {:?}: {}", part_path, save_path, e))
                 })?;
             eprintln!("[scheduler] download complete: {:?}", save_path);
         } else if result.success && self.config.dry_run {
