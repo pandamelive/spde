@@ -80,7 +80,7 @@ global:
   timeout: 1800
   skip_tls_verify: false
   connections_per_file: 8
-  dry_run: false
+  dry_run: true
 output:
   save_path: "./download"
 proxy:

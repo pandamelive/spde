@@ -37,6 +37,8 @@ pub struct DownloadConfig {
     pub enable_progress_smoothing: bool,
     /// 保存目录
     pub save_dir: std::path::PathBuf,
+    /// 不落盘模式（dry_run）：下载数据直接丢弃，不写入磁盘
+    pub dry_run: bool,
 }
 
 impl Default for DownloadConfig {
@@ -54,6 +56,7 @@ impl Default for DownloadConfig {
             enable_adaptive: true,
             enable_progress_smoothing: true,
             save_dir: std::path::PathBuf::from("./download"),
+            dry_run: true,
         }
     }
 }

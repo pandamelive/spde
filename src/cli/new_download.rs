@@ -1,6 +1,6 @@
 //! 新下载执行模块（基于 DownloadScheduler 的智能下载架构）
 //!
-//! 使用新的四层架构：domain → service → infra → cli
+//! 使用新的四层架构：domain ← service ← infra ← cli
 //! 支持多源并发分片、自适应连接数、断点续传、镜像发现、进度平滑。
 //!
 //! 与旧下载器（`downloader/`）并存，通过配置开关切换。
@@ -101,6 +101,7 @@ pub async fn execute_download(
         enable_adaptive: true,
         enable_progress_smoothing: true,
         save_dir: params.save_dir.clone(),
+        dry_run: params.dry_run,
     };
 
     // 创建下载调度器
