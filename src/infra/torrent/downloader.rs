@@ -30,10 +30,7 @@ pub struct TorrentChunkDownloader {
 
 impl Default for TorrentChunkDownloader {
     fn default() -> Self {
-        Self {
-            timeout_secs: 1800,
-            dry_run: true,
-        }
+        Self { timeout_secs: 1800, dry_run: true }
     }
 }
 
@@ -53,31 +50,24 @@ impl TorrentChunkDownloader {
     async fn probe_torrent_size(source: &TorrentSource) -> Option<u64> {
         match source.source_type() {
             TorrentSourceType::LocalTorrent => {
-                // 读取 .torrent 文件，尝试解析 info 部分获取文件大小
-                // 简化实现：读取文件大小作为估算（实际应该解析 bencode）
                 match tokio::fs::metadata(source.uri()).await {
                     Ok(meta) => {
-                        // .torrent 文件本身通常几 KB，实际内容大小未知
-                        // 返回一个合理的默认值，让调度器能继续执行
                         tracing::warn!(
                             "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
                             meta.len()
                         );
-                        Some(1024 * 1024 * 1024) // 默认 1GB
+                        Some(1024 * 1024 * 1024)
                     }
                     Err(_) => None,
                 }
             }
             TorrentSourceType::Magnet => {
-                // 磁力链接需要下载 metadata 才能知道文件大小
-                // dry_run 模式下返回默认值
                 tracing::warn!("[torrent] 磁力链接大小未知，使用默认值 1GB");
-                Some(1024 * 1024 * 1024) // 默认 1GB
+                Some(1024 * 1024 * 1024)
             }
             TorrentSourceType::RemoteTorrent => {
-                // 远程种子需要先下载才能知道大小
                 tracing::warn!("[torrent] 远程种子大小未知，使用默认值 1GB");
-                Some(1024 * 1024 * 1024) // 默认 1GB
+                Some(1024 * 1024 * 1024)
             }
         }
     }
@@ -101,19 +91,16 @@ impl ChunkDownloader for TorrentChunkDownloader {
             .downcast_ref::<TorrentSource>()
             .context("source is not a TorrentSource")?;
 
-        let size_bytes = Self::probe_torrent_size(torrent_source).await.unwrap_or(
-            1024 * 1024 * 1024, // 默认 1GB
-        );
+        let size_bytes =
+            Self::probe_torrent_size(torrent_source).await.unwrap_or(1024 * 1024 * 1024);
 
         if self.dry_run {
-            // dry_run 模式：不需要断点续传和多连接
             Ok(DownloadFileInfo {
                 size_bytes,
                 supports_resume: false,
                 supports_multi_connection: false,
             })
         } else {
-            // 真实下载模式：标记支持（虽然暂未实现）
             Ok(DownloadFileInfo {
                 size_bytes,
                 supports_resume: true,
@@ -141,15 +128,11 @@ impl ChunkDownloader for TorrentChunkDownloader {
             .downcast_ref::<TorrentSource>()
             .context("source is not a TorrentSource")?;
 
-        // 检查取消
         if cancel.is_cancelled() {
             return Err(CoreError::External(anyhow!("download cancelled")));
         }
 
         if self.dry_run {
-            // ============================================
-            // dry_run 模式：模拟下载，不写盘、不创建目录
-            // ============================================
             tracing::info!(
                 "[torrent] dry_run 模式，模拟下载: {} (chunk_id={}, offset={}, size={})",
                 torrent_source.uri(),
@@ -158,14 +141,12 @@ impl ChunkDownloader for TorrentChunkDownloader {
                 chunk.size
             );
 
-            // 模拟下载进度：写入空数据到 writer（NullChunkWriter 会直接丢弃）
             let dummy_data = vec![0u8; chunk.size as usize];
             writer
                 .write_at(chunk.offset, &dummy_data)
                 .await
                 .context("failed to write chunk (dry_run)")?;
 
-            // 模拟短暂延迟，让进度显示更真实
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
             let elapsed = start.elapsed().as_secs_f64();
@@ -179,9 +160,6 @@ impl ChunkDownloader for TorrentChunkDownloader {
             });
         }
 
-        // ============================================
-        // 真实下载模式：暂未实现，返回明确错误
-        // ============================================
         let source_type = torrent_source.source_type();
         let error_msg = match source_type {
             TorrentSourceType::LocalTorrent => {
