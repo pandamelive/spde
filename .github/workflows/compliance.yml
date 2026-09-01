@@ -17,7 +17,7 @@ jobs:
 
       - name: Checkout PandaNetOS 标准库
         run: |
-          git clone --depth 1 --branch feat/spde-new-architecture-deps https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
+          git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
           ln -sf PandaNetOS ../pandanetos 2>/dev/null || true
 
       - name: 安装 Rust 工具链
