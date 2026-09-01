@@ -9,7 +9,8 @@ use std::any::Any;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use futures_util::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -91,7 +92,14 @@ impl FtpFetcher {
                 } else {
                     (host_port.to_string(), 21)
                 };
-                (host, port, user, "anonymous@".to_string(), format!("/{}", path), is_ftps)
+                (
+                    host,
+                    port,
+                    user,
+                    "anonymous@".to_string(),
+                    format!("/{}", path),
+                    is_ftps,
+                )
             }
         }
     }
@@ -105,7 +113,7 @@ impl FtpFetcher {
         debug!(addr = %addr, "connecting to FTP server");
 
         // 连接（带超时）
-        let stream = tokio::time::timeout(
+        let mut stream = tokio::time::timeout(
             Duration::from_secs(self.timeout_secs),
             suppaftp::AsyncFtpStream::connect(addr),
         )
@@ -222,7 +230,7 @@ impl FtpFetcher {
 
 #[async_trait]
 impl ChunkFetcher for FtpFetcher {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         if self.is_ftps {
             "ftps"
         } else {
@@ -231,7 +239,10 @@ impl ChunkFetcher for FtpFetcher {
     }
 
     fn identifier(&self) -> String {
-        format!("ftp:{}:{}:{}{}", self.host, self.port, self.username, self.path)
+        format!(
+            "ftp:{}:{}:{}{}",
+            self.host, self.port, self.username, self.path
+        )
     }
 
     fn display_name(&self) -> String {
@@ -252,9 +263,9 @@ impl ChunkFetcher for FtpFetcher {
             };
 
             let capabilities = SourceCapabilities {
-                supports_range: true,  // FTP 支持 REST 断点续传
+                supports_range: true,             // FTP 支持 REST 断点续传
                 supports_multi_connection: false, // FTP 不建议多连接
-                supports_resume: true,  // 支持断点续传
+                supports_resume: true,            // 支持断点续传
                 immutable: false,
                 max_concurrency: 1,
                 chunk_size_range: None,
@@ -290,11 +301,7 @@ impl ChunkFetcher for FtpFetcher {
 
         #[cfg(feature = "ftp")]
         {
-            debug!(
-                offset = offset,
-                length = length,
-                "FTP fetch_chunk started"
-            );
+            debug!(offset = offset, length = length, "FTP fetch_chunk started");
 
             let downloaded = self
                 .download_range(offset, length, writer)

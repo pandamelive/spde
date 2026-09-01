@@ -13,7 +13,6 @@
 //! - 实时反馈：基于实际下载效果调整，不依赖预设值
 //! - 安全边界：所有参数都有上下限，防止极端值
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
@@ -69,8 +68,8 @@ impl Default for AdaptiveConfig {
             max_concurrency: 32,
 
             initial_chunk_size: 4 * 1024 * 1024, // 4MB
-            min_chunk_size: 1 * 1024 * 1024,      // 1MB
-            max_chunk_size: 64 * 1024 * 1024,     // 64MB
+            min_chunk_size: 1 * 1024 * 1024,     // 1MB
+            max_chunk_size: 64 * 1024 * 1024,    // 64MB
 
             initial_timeout_secs: 30,
             min_timeout_secs: 10,
@@ -90,7 +89,7 @@ impl Default for AdaptiveConfig {
 }
 
 /// 下载状态快照（用于自适应决策）
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DownloadSnapshot {
     /// 当前总速度（字节/秒）
     pub total_speed_bps: u64,
@@ -110,6 +109,21 @@ pub struct DownloadSnapshot {
     pub total_bytes: u64,
     /// 快照时间
     pub timestamp: Instant,
+}
+impl Default for DownloadSnapshot {
+    fn default() -> Self {
+        Self {
+            total_speed_bps: 0,
+            active_connections: 0,
+            recent_requests: 0,
+            recent_successes: 0,
+            recent_failures: 0,
+            avg_latency_ms: 0.0,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            timestamp: Instant::now(),
+        }
+    }
 }
 
 impl DownloadSnapshot {
@@ -271,8 +285,8 @@ impl AdaptiveController {
             && error_rate < cfg.error_rate_threshold
             && params.concurrency < cfg.max_concurrency
         {
-            params.concurrency = (params.concurrency + cfg.concurrency_step)
-                .min(cfg.max_concurrency);
+            params.concurrency =
+                (params.concurrency + cfg.concurrency_step).min(cfg.max_concurrency);
             concurrency_changed = true;
             info!(
                 old_concurrency = params.concurrency - cfg.concurrency_step,
@@ -286,8 +300,8 @@ impl AdaptiveController {
             || error_rate > cfg.error_rate_threshold)
             && params.concurrency > cfg.min_concurrency
         {
-            params.concurrency = (params.concurrency - cfg.concurrency_step)
-                .max(cfg.min_concurrency);
+            params.concurrency =
+                (params.concurrency - cfg.concurrency_step).max(cfg.min_concurrency);
             concurrency_changed = true;
             info!(
                 old_concurrency = params.concurrency + cfg.concurrency_step,

@@ -55,7 +55,7 @@ impl LocalFileFetcher {
 
 #[async_trait]
 impl ChunkFetcher for LocalFileFetcher {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         "file"
     }
 
@@ -75,11 +75,11 @@ impl ChunkFetcher for LocalFileFetcher {
         let file_size = metadata.len();
 
         let capabilities = SourceCapabilities {
-            supports_range: true,  // 本地文件支持 seek
+            supports_range: true,            // 本地文件支持 seek
             supports_multi_connection: true, // 支持多线程并发读取
-            supports_resume: true,  // 支持断点续传
+            supports_resume: true,           // 支持断点续传
             immutable: false,
-            max_concurrency: 8,     // 磁盘 IO 限制
+            max_concurrency: 8, // 磁盘 IO 限制
             chunk_size_range: Some((1 * 1024 * 1024, 64 * 1024 * 1024)),
             protocol: "file",
         };

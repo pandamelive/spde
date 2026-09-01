@@ -96,7 +96,13 @@ impl SftpFetcher {
                 } else {
                     (host_port.to_string(), 22)
                 };
-                (host, port, user, format!("/{}", path), protocol_type.to_string())
+                (
+                    host,
+                    port,
+                    user,
+                    format!("/{}", path),
+                    protocol_type.to_string(),
+                )
             }
         }
     }
@@ -120,7 +126,10 @@ impl SftpFetcher {
         use std::time::Duration;
 
         let ssh_args = self.ssh_base_args();
-        let remote_cmd = format!("stat -c %s '{}' 2>/dev/null || wc -c < '{}'", self.path, self.path);
+        let remote_cmd = format!(
+            "stat -c %s '{}' 2>/dev/null || wc -c < '{}'",
+            self.path, self.path
+        );
 
         debug!(host = %self.host, cmd = %remote_cmd, "getting file size via SSH");
 
@@ -226,12 +235,15 @@ impl SftpFetcher {
 
 #[async_trait]
 impl ChunkFetcher for SftpFetcher {
-    fn protocol(&self) -> &str {
-        &self.protocol_type
+    fn protocol(&self) -> &'static str {
+        "sftp"
     }
 
     fn identifier(&self) -> String {
-        format!("{}:{}@{}:{}{}", self.protocol_type, self.username, self.host, self.port, self.path)
+        format!(
+            "{}:{}@{}:{}{}",
+            self.protocol_type, self.username, self.host, self.port, self.path
+        )
     }
 
     fn display_name(&self) -> String {
@@ -250,9 +262,9 @@ impl ChunkFetcher for SftpFetcher {
         };
 
         let capabilities = SourceCapabilities {
-            supports_range: true,  // SFTP 支持 seek
+            supports_range: true,             // SFTP 支持 seek
             supports_multi_connection: false, // 不建议多连接
-            supports_resume: true,  // 支持断点续传
+            supports_resume: true,            // 支持断点续传
             immutable: false,
             max_concurrency: 1,
             chunk_size_range: None,
@@ -271,11 +283,7 @@ impl ChunkFetcher for SftpFetcher {
     ) -> Result<ChunkStats> {
         let start = Instant::now();
 
-        debug!(
-            offset = offset,
-            length = length,
-            "SFTP fetch_chunk started"
-        );
+        debug!(offset = offset, length = length, "SFTP fetch_chunk started");
 
         let downloaded = self
             .download_range(offset, length, writer)

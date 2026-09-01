@@ -100,10 +100,7 @@ impl HttpConnectionPool {
             .timeout(Duration::from_secs(config.request_timeout_secs))
             .pool_max_idle_per_host(config.max_idle_per_host)
             .pool_idle_timeout(Duration::from_secs(config.max_idle_time_secs))
-            .redirect(reqwest::redirect::Policy::limited(config.max_redirects))
-            .gzip(true)
-            .brotli(true)
-            .deflate(true);
+            .redirect(reqwest::redirect::Policy::limited(config.max_redirects));
 
         if config.tcp_keepalive {
             builder = builder.tcp_keepalive(Duration::from_secs(config.tcp_keepalive_secs));
@@ -189,7 +186,8 @@ impl HttpConnectionPool {
 
 impl Default for HttpConnectionPool {
     fn default() -> Self {
-        Self::new(ConnectionPoolConfig::default()).expect("failed to create default connection pool")
+        Self::new(ConnectionPoolConfig::default())
+            .expect("failed to create default connection pool")
     }
 }
 
@@ -199,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_client_reuse() {
-        let pool = HttpConnectionPool::default().unwrap();
+        let pool = HttpConnectionPool::default();
 
         let client1 = pool.get_client("example.com");
         let client2 = pool.get_client("example.com");
@@ -210,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_different_hosts() {
-        let pool = HttpConnectionPool::default().unwrap();
+        let pool = HttpConnectionPool::default();
 
         pool.get_client("example.com");
         pool.get_client("github.com");

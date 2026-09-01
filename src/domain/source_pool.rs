@@ -16,10 +16,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::domain::chunk_fetcher::{ChunkFetcher, SourceCapabilities};
+
+/// 源发现器 trait
+///
+/// 各种源发现机制（DNS多IP、URL替换、DHT/PEX、tracker等）实现此接口，
+/// 源池调用 discover 方法获取新的下载源。
+#[async_trait]
+pub trait SourceDiscoverer: Send + Sync {
+    /// 发现新的下载源
+    ///
+    /// # 参数
+    /// - source_url: 原始源 URL
+    ///
+    /// # 返回
+    /// 发现的新源列表（ChunkFetcher trait 对象），如果没有发现新源则返回空 vec
+    async fn discover(&self, source_url: &str) -> anyhow::Result<Vec<Arc<dyn ChunkFetcher>>>;
+
+    /// 发现器名称（用于日志和监控）
+    fn name(&self) -> &str;
+}
 
 /// 源的健康状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,7 +298,11 @@ impl SourcePool {
                 (s.health == SourceHealth::Healthy || s.health == SourceHealth::Degraded)
                     && s.cooldown_until.map(|t| now >= t).unwrap_or(true)
             })
-            .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.score
+                    .partial_cmp(&b.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|s| s.fetcher.clone())
     }
 
@@ -295,9 +319,17 @@ impl SourcePool {
             })
             .collect();
 
-        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        sorted.into_iter().take(n).map(|s| s.fetcher.clone()).collect()
+        sorted
+            .into_iter()
+            .take(n)
+            .map(|s| s.fetcher.clone())
+            .collect()
     }
 
     /// 记录一次成功下载
@@ -333,7 +365,8 @@ impl SourcePool {
                 warn!(source = %source_id, "source marked as dead");
             } else if source.stats.consecutive_failures >= self.config.cooldown_threshold {
                 source.health = SourceHealth::CoolingDown;
-                source.cooldown_until = Some(Instant::now() + Duration::from_secs(self.config.cooldown_duration_secs));
+                source.cooldown_until =
+                    Some(Instant::now() + Duration::from_secs(self.config.cooldown_duration_secs));
                 warn!(source = %source_id, cooldown_secs = self.config.cooldown_duration_secs, "source cooling down");
             } else {
                 source.health = SourceHealth::Degraded;
@@ -356,7 +389,9 @@ impl SourcePool {
         let latency_score = if stats.avg_latency_ms == 0.0 {
             50.0 // 未知延迟给中等分
         } else {
-            ((5000.0 - stats.avg_latency_ms) / 5000.0 * 100.0).max(0.0).min(100.0)
+            ((5000.0 - stats.avg_latency_ms) / 5000.0 * 100.0)
+                .max(0.0)
+                .min(100.0)
         };
 
         // 稳定性评分（标准差越小越稳定）
@@ -371,10 +406,8 @@ impl SourcePool {
         let success_rate_score = stats.success_rate() * 100.0;
 
         // 加权平均
-        let total_weight = cfg.speed_weight
-            + cfg.latency_weight
-            + cfg.stability_weight
-            + cfg.success_rate_weight;
+        let total_weight =
+            cfg.speed_weight + cfg.latency_weight + cfg.stability_weight + cfg.success_rate_weight;
 
         let score = (speed_score * cfg.speed_weight
             + latency_score * cfg.latency_weight

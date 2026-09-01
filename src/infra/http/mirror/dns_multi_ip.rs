@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use tracing::{debug, info, warn};
 use url::Url;
 
+use crate::domain::chunk_fetcher::ChunkFetcher;
 use crate::domain::source_pool::SourceDiscoverer;
 use crate::infra::http::fetcher::HttpRangeFetcher;
-use crate::domain::chunk_fetcher::ChunkFetcher;
 
 /// DNS 多 IP 源发现器
 #[derive(Debug, Clone)]
@@ -57,7 +57,9 @@ impl DnsMultiIpDiscoverer {
 
     /// 从 URL 中提取主机名
     fn extract_host(&self, url: &str) -> Option<String> {
-        Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string()))
+        Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()))
     }
 }
 

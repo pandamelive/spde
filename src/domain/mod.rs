@@ -6,13 +6,17 @@
 //! - source_pool: 智能源池（源发现/健康检查/评分/调度/淘汰）
 //! - adaptive: 自适应控制器（动态调整并发数/分片大小/重试策略）
 
+pub mod adaptive;
 pub mod chunk_fetcher;
 pub mod source_pool;
-pub mod adaptive;
 
-pub use chunk_fetcher::{ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities};
-pub use source_pool::{SourcePool, RatedSource, SourceHealth as PoolSourceHealth, ScoringConfig};
-pub use adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot, AdaptiveParams};
+pub use adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveParams, DownloadSnapshot};
+pub use chunk_fetcher::{
+    ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities,
+};
+pub use source_pool::{
+    RatedSource, ScoringConfig, SourceDiscoverer, SourceHealth as PoolSourceHealth, SourcePool,
+};
 
 pub use pandanetos::domain::{
     CancellationToken, Chunk, ChunkDownloader, ChunkSet, ChunkState, ChunkStats, ChunkWriter,

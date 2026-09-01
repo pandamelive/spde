@@ -1,4 +1,4 @@
-//! HTTP 分片下载器
+﻿//! HTTP 分片下载器
 //!
 //! 实现 [`pandanetos::domain::ChunkDownloader`] trait。
 //! 支持 HTTP/HTTPS、Range 请求、绑定特定 IP（DNS 多 IP 并发）、
@@ -169,14 +169,14 @@ impl ChunkDownloader for HttpChunkDownloader {
         // 如果返回 200 OK，说明服务器忽略了 Range 头，返回了整个文件
         if status != reqwest::StatusCode::PARTIAL_CONTENT {
             let error_code = if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-                codes::DOWNLOAD_RANGE_NOT_SATISFIABLE
+                codes::DOWNLOAD_RANGE_NOT_SATISFIED
             } else if status == reqwest::StatusCode::REQUEST_TIMEOUT {
                 codes::DOWNLOAD_TIMEOUT
             } else if !status.is_success() {
                 codes::DOWNLOAD_CONNECTION_FAILED
             } else {
                 // 200 OK 但不是 206：服务器不支持 Range
-                codes::DOWNLOAD_RANGE_NOT_SATISFIABLE
+                codes::DOWNLOAD_RANGE_NOT_SATISFIED
             };
             return Err(CoreError::Internal(format!(
                 "{}: expected 206 Partial Content, got HTTP {} (server may not support Range)",

@@ -14,9 +14,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{debug, info};
 
+use crate::domain::chunk_fetcher::ChunkFetcher;
 use crate::domain::source_pool::SourceDiscoverer;
 use crate::infra::http::fetcher::HttpRangeFetcher;
-use crate::domain::chunk_fetcher::ChunkFetcher;
 
 /// URL 替换规则
 #[derive(Debug, Clone)]
@@ -34,7 +34,10 @@ impl UrlRewriteRule {
     pub fn new(match_prefix: &str, replace_prefixes: Vec<&str>, description: &str) -> Self {
         Self {
             match_prefix: match_prefix.to_string(),
-            replace_prefixes: replace_prefixes.into_iter().map(|s| s.to_string()).collect(),
+            replace_prefixes: replace_prefixes
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
             description: description.to_string(),
         }
     }

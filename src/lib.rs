@@ -25,16 +25,22 @@ pub mod service;
 // ===== 新架构核心导出 =====
 
 /// 统一数据块获取接口（所有协议实现此 trait）
-pub use domain::chunk_fetcher::{ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities};
+pub use domain::chunk_fetcher::{
+    ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities,
+};
 
 /// 智能源池
-pub use domain::source_pool::{SourcePool, RatedSource, ScoringConfig, SourceHealth as PoolSourceHealth};
+pub use domain::source_pool::{
+    RatedSource, ScoringConfig, SourceHealth as PoolSourceHealth, SourcePool,
+};
 
 /// 自适应控制器
-pub use domain::adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot, AdaptiveParams};
+pub use domain::adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveParams, DownloadSnapshot};
 
 /// 统一分片调度器（协议无关）
-pub use service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig, DownloadResult as SchedulerDownloadResult};
+pub use service::chunk_scheduler::{
+    ChunkScheduler, ChunkSchedulerConfig, DownloadResult as SchedulerDownloadResult,
+};
 
 // ===== 协议适配器（Fetcher 实现） =====
 
@@ -67,8 +73,8 @@ pub use infra::disk::file_writer::FileChunkWriter;
 
 pub use infra::http::mirror::dns::DnsMultiIpDiscoverer;
 pub use infra::http::source::HttpSource;
-pub use service::progress::ProgressSmoother;
 pub use service::controller::DownloadController;
+pub use service::progress::ProgressSmoother;
 
 #[cfg(feature = "torrent")]
 pub use infra::torrent::source::TorrentSource;

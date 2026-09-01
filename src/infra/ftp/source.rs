@@ -101,7 +101,7 @@ impl FtpSource {
 }
 
 impl DownloadSource for FtpSource {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         if self.is_ftps {
             "ftps"
         } else {
@@ -131,6 +131,7 @@ impl DownloadSource for FtpSource {
             max_concurrency: 8,        // FTP 服务器通常限制连接数
             chunk_size_range: Some((1 * 1024 * 1024, 16 * 1024 * 1024)), // 1MB ~ 16MB
             immutable: true,           // 远程文件内容不可变
+            protocol: "ftp",
         }
     }
 

@@ -1,4 +1,4 @@
-//! 统一数据块获取接口（协议无关核心抽象）
+﻿//! 统一数据块获取接口（协议无关核心抽象）
 //!
 //! 所有下载协议（HTTP/FTP/SSH/Torrent/File）都实现此 trait，
 //! 调度器完全不关心底层协议，只操作 ChunkFetcher 接口。
@@ -110,7 +110,7 @@ pub struct ChunkStats {
 #[async_trait]
 pub trait ChunkFetcher: Send + Sync + Debug {
     /// 协议名称（http/https/ftp/sftp/torrent/file）
-    fn protocol(&self) -> &str;
+    fn protocol(&self) -> &'static str;
 
     /// 源的唯一标识符（用于去重和日志）
     fn identifier(&self) -> String;

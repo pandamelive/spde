@@ -257,7 +257,8 @@ impl BandwidthScheduler {
             }
             BandwidthStrategy::Dynamic => {
                 // 动态调整：进度慢的任务获得更多带宽
-                let avg_progress: f64 = tasks.values().map(|t| t.progress()).sum::<f64>() / task_count as f64;
+                let avg_progress: f64 =
+                    tasks.values().map(|t| t.progress()).sum::<f64>() / task_count as f64;
                 for task in tasks.values_mut() {
                     let progress_diff = avg_progress - task.progress();
                     let factor = 1.0 + progress_diff / 100.0; // 进度慢的获得更多

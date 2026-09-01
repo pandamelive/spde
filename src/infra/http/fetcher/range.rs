@@ -1,4 +1,4 @@
-//! HTTP Range Fetcher（支持范围请求的 HTTP 下载器）
+﻿//! HTTP Range Fetcher（支持范围请求的 HTTP 下载器）
 //!
 //! 适用于支持 Range 请求的 HTTP/HTTPS 服务器。
 //! 通过 Range 请求获取指定偏移和长度的数据块。
@@ -10,7 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use pandanetos::error::{CoreError, Result};
 
@@ -110,7 +110,7 @@ impl HttpRangeFetcher {
 
 #[async_trait]
 impl ChunkFetcher for HttpRangeFetcher {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         if self.url.starts_with("https://") {
             "https"
         } else {

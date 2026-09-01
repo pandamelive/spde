@@ -1,4 +1,4 @@
-//! 进度平滑模块
+﻿//! 进度平滑模块
 //!
 //! 使用指数移动平均（EMA）算法平滑下载速度和进度，
 //! 避免进度条跳动和速度剧烈波动。
@@ -139,7 +139,7 @@ impl ProgressSmoother {
         if *smoothed == 0.0 {
             *smoothed = raw_speed;
         } else {
-            let change = (raw_speed - *smoothed).abs() / *smoothed.max(1.0);
+            let change = (raw_speed - *smoothed).abs() / smoothed.max(1.0);
             if change > self.config.speed_change_threshold {
                 *smoothed = self.alpha * raw_speed + (1.0 - self.alpha) * *smoothed;
             }

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWrite;
 use tokio::sync::Mutex;
 
 use crate::infra::disk::null_writer::NullChunkWriter;
@@ -43,9 +43,8 @@ pub fn create_writer(
 ) -> anyhow::Result<Arc<Mutex<dyn AsyncWrite + Unpin + Send>>> {
     match writer_type {
         WriterType::Disk => {
-            let path = file_path.ok_or_else(|| {
-                anyhow::anyhow!("file_path is required for Disk writer")
-            })?;
+            let path = file_path
+                .ok_or_else(|| anyhow::anyhow!("file_path is required for Disk writer"))?;
 
             // 确保父目录存在
             if let Some(parent) = path.parent() {

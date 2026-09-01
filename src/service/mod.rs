@@ -16,13 +16,17 @@ pub mod source_manager;
 pub mod strategy;
 
 pub use adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveStats};
-pub use bandwidth_scheduler::{BandwidthScheduler, BandwidthSchedulerConfig, BandwidthStrategy, TaskInfo};
+pub use bandwidth_scheduler::{
+    BandwidthScheduler, BandwidthSchedulerConfig, BandwidthStrategy, TaskInfo,
+};
 pub use cdn_throttle::{CdnThrottleConfig, CdnThrottleDetector, CdnThrottleStats};
 pub use chunk_scheduler::ChunkScheduler;
 pub use controller::DownloadController;
 pub use mirror_bus::MirrorBus;
 pub use progress::ProgressSmoother;
-pub use progress_smoother::{ProgressSmoother as NewProgressSmoother, ProgressSmootherConfig, SmoothProgress};
+pub use progress_smoother::{
+    ProgressSmoother as NewProgressSmoother, ProgressSmootherConfig, SmoothProgress,
+};
 pub use scheduler::DownloadScheduler;
 pub use source_manager::SourceManager;
 pub use strategy::multi_source_chunked::MultiSourceChunkedStrategy;

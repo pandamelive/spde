@@ -21,14 +21,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use pandanetos::error::{CoreError, Result};
 
 use crate::domain::chunk_fetcher::{ChunkFetcher, ChunkStats, SourceCapabilities};
 
 /// BT 下载状态（共享）
-#[derive(Debug)]
 struct TorrentState {
     /// 是否已经初始化
     initialized: bool,
@@ -71,7 +70,7 @@ impl TorrentState {
 }
 
 /// Torrent Piece Fetcher
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TorrentPieceFetcher {
     /// 原始 URI（磁力链接或 .torrent 文件路径）
     uri: String,
@@ -85,6 +84,16 @@ pub struct TorrentPieceFetcher {
     state: Arc<Mutex<TorrentState>>,
 }
 
+impl std::fmt::Debug for TorrentPieceFetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TorrentPieceFetcher")
+            .field("uri", &self.uri)
+            .field("save_dir", &self.save_dir)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("dry_run", &self.dry_run)
+            .finish()
+    }
+}
 impl TorrentPieceFetcher {
     /// 创建新的 Torrent Piece Fetcher
     pub fn new(
@@ -139,43 +148,29 @@ impl TorrentPieceFetcher {
             .map_err(|e| CoreError::Network(format!("failed to create librqbit session: {}", e)))?;
 
         // 创建 Api
-        let api = librqbit::Api::new(session.clone());
+        let api = librqbit::Api::new(session.clone(), None);
 
         // 添加 torrent
         let add_result = if self.uri.starts_with("magnet:") {
-            api.api_add_torrent(
-                librqbit::AddTorrent::Url {
-                    url: self.uri.clone(),
-                    overwrite: false,
-                    only_files_regex: None,
-                    only_files: None,
-                },
-                None,
-            )
-            .await
+            api.api_add_torrent(librqbit::AddTorrent::Url(self.uri.clone().into()), None)
+                .await
         } else if self.uri.ends_with(".torrent") {
             let data = tokio::fs::read(&self.uri)
                 .await
                 .map_err(|e| CoreError::IO(format!("failed to read torrent file: {}", e)))?;
-            api.api_add_torrent(
-                librqbit::AddTorrent::TorrentFile {
-                    content: data.into(),
-                    overwrite: false,
-                    only_files_regex: None,
-                    only_files: None,
-                },
-                None,
-            )
-            .await
+            api.api_add_torrent(librqbit::AddTorrent::TorrentFileBytes(data.into()), None)
+                .await
         } else {
-            return Err(CoreError::InvalidParam(
-                format!("unsupported torrent URI: {}", self.uri),
-            ));
+            return Err(CoreError::InvalidParam(format!(
+                "unsupported torrent URI: {}",
+                self.uri
+            )));
         };
 
         let torrent_id = add_result
             .map_err(|e| CoreError::Network(format!("failed to add torrent: {}", e)))?
-            .torrent_id;
+            .id
+            .ok_or_else(|| CoreError::Network("torrent id is None".into()))?;
 
         info!(torrent_id = torrent_id, "torrent added successfully");
 
@@ -190,11 +185,20 @@ impl TorrentPieceFetcher {
                 ));
             }
 
-            if let Ok(details) = api.api_torrent_details(torrent_id.into()) {
-                if let Some(info) = details.info {
-                    state.file_size = info.total_bytes as u64;
-                    state.piece_size = info.piece_length as u64;
-                    state.total_pieces = info.num_pieces as u32;
+            if let Ok(details) =
+                api.api_torrent_details(librqbit::api::TorrentIdOrHash::Id(torrent_id))
+            {
+                if details.total_pieces > 0 {
+                    state.total_pieces = details.total_pieces;
+                    if let Some(files) = &details.files {
+                        state.file_size = files.iter().map(|f| f.length).sum();
+                    }
+                    state.piece_size = if state.total_pieces > 0 {
+                        (state.file_size + state.total_pieces as u64 - 1)
+                            / state.total_pieces as u64
+                    } else {
+                        4 * 1024 * 1024
+                    };
                     break;
                 }
             }
@@ -244,15 +248,19 @@ impl TorrentPieceFetcher {
         let api = state
             .api
             .as_ref()
-            .ok_or_else(|| CoreError::NotInitialized("BT not initialized".into()))?;
+            .ok_or_else(|| CoreError::NotInitialized("BT not initialized".into()))?
+            .clone();
         let torrent_id = state
             .torrent_id
             .ok_or_else(|| CoreError::NotInitialized("torrent not added".into()))?;
 
-        let piece_size = if piece_index == state.total_pieces - 1 {
-            state.file_size - (piece_index as u64 * state.piece_size)
+        let total_pieces = state.total_pieces;
+        let file_size = state.file_size;
+        let piece_size_state = state.piece_size;
+        let piece_size = if piece_index == total_pieces - 1 {
+            file_size - (piece_index as u64 * piece_size_state)
         } else {
-            state.piece_size
+            piece_size_state
         };
 
         drop(state);
@@ -356,7 +364,7 @@ impl TorrentPieceFetcher {
 
 #[async_trait]
 impl ChunkFetcher for TorrentPieceFetcher {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         "torrent"
     }
 

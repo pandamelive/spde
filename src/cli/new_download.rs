@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::{mpsc, Mutex};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use pandanetos::domain::{CancellationToken, DownloadProgress};
@@ -26,12 +27,9 @@ use crate::infra::disk::writer_factory::{create_writer, WriterType};
 use crate::infra::file::fetcher::LocalFileFetcher;
 use crate::infra::file::source::FileSource;
 use crate::infra::ftp::fetcher::FtpFetcher;
-use crate::infra::ftp::source::FtpSource;
 use crate::infra::http::fetcher::{HttpRangeFetcher, HttpStreamFetcher};
 use crate::infra::ssh::fetcher::SftpFetcher;
-use crate::infra::ssh::source::SshSource;
 use crate::infra::torrent::fetcher::TorrentPieceFetcher;
-use crate::infra::torrent::source::TorrentSource;
 use crate::service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig};
 
 /// 新下载任务执行结果
@@ -50,6 +48,7 @@ fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
 }
 
 /// 协议识别结果
+#[derive(Debug)]
 enum ProtocolType {
     Http,
     Https,
@@ -201,7 +200,14 @@ pub async fn execute_download(
     info!(url = %url, protocol = ?protocol, "protocol detected");
 
     // 步骤 2：创建对应的 ChunkFetcher
-    let fetcher = create_fetcher(url, protocol, timeout_secs, params.dry_run, &params.save_dir).await?;
+    let fetcher = create_fetcher(
+        url,
+        protocol,
+        timeout_secs,
+        params.dry_run,
+        &params.save_dir,
+    )
+    .await?;
 
     // 步骤 3：创建统一分片调度器
     let scheduler_config = ChunkSchedulerConfig {

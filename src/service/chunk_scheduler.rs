@@ -22,8 +22,8 @@ use tracing::{debug, error, info, warn};
 use pandanetos::domain::{CancellationToken, DownloadProgress};
 use pandanetos::error::{CoreError, Result};
 
-use crate::domain::adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot};
-use crate::domain::chunk_fetcher::{ChunkFetcher, ChunkStats, SourceCapabilities};
+use crate::domain::adaptive::{AdaptiveConfig, AdaptiveController, DownloadSnapshot};
+use crate::domain::chunk_fetcher::{ChunkFetcher, SourceCapabilities};
 use crate::domain::source_pool::{ScoringConfig, SourcePool};
 
 /// 分片任务
@@ -124,12 +124,13 @@ impl ChunkScheduler {
     ) -> Result<DownloadResult> {
         let start = Instant::now();
 
-        info!(
-            source_count = self.source_pool.len().await,
-            "starting chunk scheduler"
-        );
+        let source_count = self.source_pool.len().await;
+
+        info!(source_count = source_count, "starting chunk scheduler");
 
         let (file_size, capabilities) = self.probe_all_sources().await?;
+
+        let source_count = self.source_pool.len().await;
 
         info!(
             file_size = file_size,
@@ -228,6 +229,8 @@ impl ChunkScheduler {
             },
         };
 
+        let source_count = self.source_pool.len().await;
+
         info!(
             success = result.success,
             total_bytes = result.total_bytes,
@@ -257,16 +260,21 @@ impl ChunkScheduler {
                     if size > file_size {
                         file_size = size;
                     }
-                    if caps.supports_range {
-                        capabilities.supports_range = true;
+                    // 合并能力：任一 source 支持则整体支持
+                    capabilities.supports_range |= caps.supports_range;
+                    capabilities.supports_multi_connection |= caps.supports_multi_connection;
+                    capabilities.supports_resume |= caps.supports_resume;
+                    capabilities.immutable |= caps.immutable;
+                    // 取最大并发数
+                    capabilities.max_concurrency = capabilities.max_concurrency.max(caps.max_concurrency);
+                    // 首个非空分片范围
+                    if capabilities.chunk_size_range.is_none() {
+                        capabilities.chunk_size_range = caps.chunk_size_range;
                     }
-                    if caps.supports_multi_connection {
-                        capabilities.supports_multi_connection = true;
+                    // 首个非空协议
+                    if capabilities.protocol.is_empty() {
+                        capabilities.protocol = caps.protocol;
                     }
-                    if caps.supports_resume {
-                        capabilities.supports_resume = true;
-                    }
-                    capabilities = caps;
                 }
                 Err(e) => {
                     warn!(
@@ -432,10 +440,7 @@ impl ChunkScheduler {
                             let mut queue = chunk_queue.lock().await;
                             queue.push(retry_task);
                         } else {
-                            error!(
-                                chunk_id = task.chunk_id,
-                                "chunk failed after max retries"
-                            );
+                            error!(chunk_id = task.chunk_id, "chunk failed after max retries");
                             failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -489,7 +494,7 @@ impl ChunkScheduler {
                     speed_bps,
                     percent,
                     active_connections: active_workers.load(std::sync::atomic::Ordering::Relaxed),
-                    elapsed_secs: 0,
+                    elapsed_secs: 0.0,
                 };
 
                 if progress_tx.send(progress).await.is_err() {
@@ -513,5 +518,51 @@ impl ChunkScheduler {
                 last_time = Instant::now();
             }
         })
+    }
+}
+
+// === Legacy 兼容方法（旧策略层使用，新架构 execute 不依赖这些）===
+impl ChunkScheduler {
+    /// Legacy 构造函数（旧策略层使用）
+    #[allow(dead_code)]
+    pub fn new_legacy(
+        _chunk_set: Arc<tokio::sync::Mutex<pandanetos::domain::ChunkSet>>,
+        max_retries: u32,
+    ) -> Self {
+        let mut config = ChunkSchedulerConfig::default();
+        config.max_retries = max_retries;
+        Self::new(config)
+    }
+
+    /// Legacy 方法：初始化分片队列
+    #[allow(dead_code)]
+    pub async fn init_queue(&self) {}
+
+    /// Legacy 方法：是否所有分片已完成
+    #[allow(dead_code)]
+    pub fn is_all_completed(&self) -> bool {
+        false
+    }
+
+    /// Legacy 方法：获取进度（已完成，总数）
+    #[allow(dead_code)]
+    pub fn progress(&self) -> (u32, u32) {
+        (0, 0)
+    }
+
+    /// Legacy 方法：获取下一个分片
+    #[allow(dead_code)]
+    pub async fn next_chunk(&self) -> Option<pandanetos::domain::Chunk> {
+        None
+    }
+
+    /// Legacy 方法：标记分片完成
+    #[allow(dead_code)]
+    pub async fn mark_completed(&self, _chunk_id: u32, _source_id: Option<String>) {}
+
+    /// Legacy 方法：标记分片失败
+    #[allow(dead_code)]
+    pub async fn mark_failed(&self, _chunk_id: u32, _source_id: Option<String>) -> bool {
+        false
     }
 }

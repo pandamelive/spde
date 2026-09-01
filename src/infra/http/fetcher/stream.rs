@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use reqwest::Client;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 use pandanetos::error::{CoreError, Result};
@@ -156,7 +156,7 @@ impl HttpStreamFetcher {
 
 #[async_trait]
 impl ChunkFetcher for HttpStreamFetcher {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         if self.url.starts_with("https://") {
             "https"
         } else {
@@ -189,7 +189,7 @@ impl ChunkFetcher for HttpStreamFetcher {
             supports_multi_connection: false, // 不支持多连接并发
             supports_resume: false,           // 不支持断点续传
             immutable: false,
-            max_concurrency: 1, // 只能单连接
+            max_concurrency: 1,     // 只能单连接
             chunk_size_range: None, // 无特殊要求（调度器会用单分片）
             protocol: self.protocol(),
         };
