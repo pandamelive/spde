@@ -63,6 +63,7 @@ fn create_source_and_downloader(
     save_path: &Path,
     skip_tls_verify: bool,
     timeout_secs: u64,
+    dry_run: bool,
 ) -> Result<(Box<dyn DownloadSource>, Arc<dyn ChunkDownloader>)> {
     if FileSource::is_file_uri(url) {
         let source = FileSource::from_uri(url)?;
@@ -101,7 +102,7 @@ fn create_source_and_downloader(
             let source = TorrentSource::new(url, save_dir)?;
             Ok((
                 Box::new(source),
-                Arc::new(TorrentChunkDownloader::new(timeout_secs, false)),
+                Arc::new(TorrentChunkDownloader::new(timeout_secs, dry_run)),
             ))
         }
         #[cfg(not(feature = "torrent"))]
@@ -202,7 +203,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
             // 根据 URL 协议类型创建对应的 Source 和 Downloader
             let (source, downloader) =
-                match create_source_and_downloader(&url, &file_path, skip_tls_verify, timeout_secs)
+                match create_source_and_downloader(&url, &file_path, skip_tls_verify, timeout_secs, params.dry_run)
                 {
                     Ok(sd) => sd,
                     Err(e) => {
