@@ -30,7 +30,10 @@ pub struct TorrentChunkDownloader {
 
 impl Default for TorrentChunkDownloader {
     fn default() -> Self {
-        Self { timeout_secs: 1800, dry_run: true }
+        Self {
+            timeout_secs: 1800,
+            dry_run: true,
+        }
     }
 }
 
@@ -41,7 +44,10 @@ impl TorrentChunkDownloader {
     /// - `timeout_secs`: 连接超时（秒）
     /// - `dry_run`: 是否为 dry_run 模式（不落盘，模拟下载）
     pub fn new(timeout_secs: u64, dry_run: bool) -> Self {
-        Self { timeout_secs, dry_run }
+        Self {
+            timeout_secs,
+            dry_run,
+        }
     }
 
     /// 尝试解析 .torrent 文件获取文件大小
@@ -49,16 +55,18 @@ impl TorrentChunkDownloader {
     /// 仅支持本地 .torrent 文件，磁力链接和远程种子返回 None。
     async fn probe_torrent_size(source: &TorrentSource) -> Option<u64> {
         match source.source_type() {
-            TorrentSourceType::LocalTorrent => match tokio::fs::metadata(source.uri()).await {
-                Ok(meta) => {
-                    tracing::warn!(
-                        "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
-                        meta.len()
-                    );
-                    Some(1024 * 1024 * 1024)
+            TorrentSourceType::LocalTorrent => {
+                match tokio::fs::metadata(source.uri()).await {
+                    Ok(meta) => {
+                        tracing::warn!(
+                            "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
+                            meta.len()
+                        );
+                        Some(1024 * 1024 * 1024)
+                    }
+                    Err(_) => None,
                 }
-                Err(_) => None,
-            },
+            }
             TorrentSourceType::Magnet => {
                 tracing::warn!("[torrent] 磁力链接大小未知，使用默认值 1GB");
                 Some(1024 * 1024 * 1024)
