@@ -1,4 +1,4 @@
-name: Auto Approve
+﻿name: Auto Approve
 
 on:
   pull_request:
@@ -41,7 +41,7 @@ jobs:
             return 1
           }
 
-          for attempt in $(seq 1 360); do
+          for attempt in $(seq 1 720); do
             CHECKS=$(curl -s -H "Authorization: token $APP_TOKEN" \
               "https://api.github.com/repos/$REPO/commits/$COMMIT_SHA/check-runs?per_page=100")
 
@@ -132,9 +132,9 @@ jobs:
               fi
             fi
 
-            echo "Waiting for all checks... (attempt $attempt/360)"
+            echo "Waiting for all checks... (attempt $attempt/720)"
             sleep 5
           done
 
-          echo "::error::Timeout waiting for checks (30min)"
+          echo "::error::Timeout waiting for checks (60min)"
           exit 1
