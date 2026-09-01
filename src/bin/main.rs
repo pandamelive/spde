@@ -209,12 +209,12 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                 timeout_secs,
                 params.dry_run,
             ) {
-                    Ok(sd) => sd,
-                    Err(e) => {
-                        eprintln!("[error] {}: create source failed: {:#}", name, e);
-                        return (name, url, filename, Err(e));
-                    }
-                };
+                Ok(sd) => sd,
+                Err(e) => {
+                    eprintln!("[error] {}: create source failed: {:#}", name, e);
+                    return (name, url, filename, Err(e));
+                }
+            };
 
             // 创建进度汇报通道
             let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
