@@ -6,7 +6,7 @@
 //! - `domain`  — 领域层（spde 特有的领域模型，核心抽象复用 pandanetos::domain）
 //! - `infra`   — 基础设施层（各协议适配器 + 磁盘IO实现）
 //!
-//! 旧版 `downloader` 模块保留兼容，逐步迁移到新架构。
+//! 已完全迁移到新架构，旧版 `downloader` 模块已移除。
 
 // TODO: 修复以下警告后移除此 allow
 #![allow(clippy::all)]
@@ -19,19 +19,7 @@ pub mod domain;
 pub mod infra;
 pub mod service;
 
-// 旧版下载器（兼容保留，逐步迁移到 infra/ 下的协议适配器）
-pub mod downloader;
-#[cfg(feature = "ftp")]
-pub use downloader::FtpDownloader;
-#[cfg(feature = "torrent")]
-pub use downloader::TorrentDownloader;
-pub use downloader::{
-    build_default_manager, DownloadBackend, DownloadManager, DownloadOutput, DownloadTask,
-    FileDownloader, HttpDownloader, ProgressCallback, ProgressSnapshot, SshDownloader,
-    StderrProgress,
-};
-
-// 新版智能下载器导出
+// 智能下载器导出
 pub use infra::disk::file_writer::FileChunkWriter;
 pub use infra::http::downloader::HttpChunkDownloader;
 pub use infra::http::mirror::dns::DnsMultiIpDiscoverer;
@@ -43,7 +31,7 @@ pub use service::scheduler::DownloadScheduler;
 pub use service::source_manager::SourceManager;
 pub use service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;
 
-// P0 新架构迁移新增导出
+// 新架构协议适配器导出
 pub use infra::file::downloader::FileChunkDownloader;
 pub use infra::file::source::FileSource;
 #[cfg(feature = "ftp")]

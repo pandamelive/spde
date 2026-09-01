@@ -80,8 +80,10 @@ pub async fn execute_download(
     // 通知 PK 任务开始
     ws.send_task_started(dispatch_id).await;
 
-    // 创建保存目录
-    tokio::fs::create_dir_all(&params.save_dir).await?;
+    // 创建保存目录（dry_run 模式下不创建目录，实现真正的不落盘）
+    if !params.dry_run {
+        tokio::fs::create_dir_all(&params.save_dir).await?;
+    }
     let save_path = params.save_dir.join(filename);
 
     // 超时转换
@@ -152,7 +154,7 @@ pub async fn execute_download(
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let torrent_source = TorrentSource::new(url, save_dir)?;
         source = Box::new(torrent_source);
-        downloader = Arc::new(TorrentChunkDownloader::new(timeout_secs));
+        downloader = Arc::new(TorrentChunkDownloader::new(timeout_secs, params.dry_run));
     } else if is_http {
         // HTTP/HTTPS 协议
         source = Box::new(HttpSource::new(url.to_string()));
