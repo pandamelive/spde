@@ -202,9 +202,13 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             eprintln!("[start] {} -> {:?}", name, file_path);
 
             // 根据 URL 协议类型创建对应的 Source 和 Downloader
-            let (source, downloader) =
-                match create_source_and_downloader(&url, &file_path, skip_tls_verify, timeout_secs, params.dry_run)
-                {
+            let (source, downloader) = match create_source_and_downloader(
+                &url,
+                &file_path,
+                skip_tls_verify,
+                timeout_secs,
+                params.dry_run,
+            ) {
                     Ok(sd) => sd,
                     Err(e) => {
                         eprintln!("[error] {}: create source failed: {:#}", name, e);
