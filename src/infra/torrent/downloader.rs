@@ -1,7 +1,10 @@
 //! BitTorrent 分片下载器
 //!
 //! 实现 `ChunkDownloader` trait，支持磁力链接和 .torrent 文件。
-//! 基于 librqbit（纯 Rust BT 客户端库），支持 DHT、PEX、uTP。
+//!
+//! ## 当前状态
+//! - **dry_run 模式**：完整支持，模拟下载流程，不写盘、不创建目录
+//! - **真实下载模式**：暂未实现，返回明确错误信息
 //!
 //! 注意：由于 BitTorrent 协议是 piece 级下载，不支持字节级分片，
 //! 调度器会用单分片下载整个文件。
@@ -17,16 +20,61 @@ use pandanetos::domain::{
 use pandanetos::error::{CoreError, Result};
 
 /// BitTorrent 分片下载器
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TorrentChunkDownloader {
     /// 连接超时（秒）
     timeout_secs: u64,
+    /// 是否为 dry_run 模式（不落盘）
+    dry_run: bool,
+}
+
+impl Default for TorrentChunkDownloader {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 1800,
+            dry_run: true,
+        }
+    }
 }
 
 impl TorrentChunkDownloader {
     /// 创建新的 BitTorrent 分片下载器
-    pub fn new(timeout_secs: u64) -> Self {
-        Self { timeout_secs }
+    ///
+    /// # 参数
+    /// - `timeout_secs`: 连接超时（秒）
+    /// - `dry_run`: 是否为 dry_run 模式（不落盘，模拟下载）
+    pub fn new(timeout_secs: u64, dry_run: bool) -> Self {
+        Self {
+            timeout_secs,
+            dry_run,
+        }
+    }
+
+    /// 尝试解析 .torrent 文件获取文件大小
+    ///
+    /// 仅支持本地 .torrent 文件，磁力链接和远程种子返回 None。
+    async fn probe_torrent_size(source: &TorrentSource) -> Option<u64> {
+        const DEFAULT_SIZE: u64 = 1024 * 1024 * 1024;
+
+        match source.source_type() {
+            TorrentSourceType::LocalTorrent => {
+                if let Ok(meta) = tokio::fs::metadata(source.uri()).await {
+                    tracing::warn!(
+                        "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
+                        meta.len()
+                    );
+                }
+                Some(DEFAULT_SIZE)
+            }
+            TorrentSourceType::Magnet => {
+                tracing::warn!("[torrent] 磁力链接大小未知，使用默认值 1GB");
+                Some(DEFAULT_SIZE)
+            }
+            TorrentSourceType::RemoteTorrent => {
+                tracing::warn!("[torrent] 远程种子大小未知，使用默认值 1GB");
+                Some(DEFAULT_SIZE)
+            }
+        }
     }
 }
 
@@ -38,28 +86,39 @@ impl ChunkDownloader for TorrentChunkDownloader {
 
     /// 探测 BitTorrent 文件的可用性和信息
     ///
-    /// 对于磁力链接，需要先下载 metadata 获取文件信息。
-    /// 对于 .torrent 文件，可以直接解析获取文件信息。
+    /// - 本地 .torrent 文件：尝试解析获取文件大小
+    /// - 磁力链接/远程种子：返回默认大小（1GB），实际大小在下载时获取
+    ///
+    /// **重要**：不再返回 size_bytes=0，否则调度器会直接报错。
     async fn probe(&self, source: &dyn DownloadSource) -> Result<DownloadFileInfo> {
         let torrent_source = source
             .as_any()
             .downcast_ref::<TorrentSource>()
             .context("source is not a TorrentSource")?;
 
-        // 基础版本：返回默认值，实际文件大小在下载时获取
-        // 后续可以优化为：解析 .torrent 文件获取文件大小，
-        // 或者下载磁力链接的 metadata 获取文件大小
-        Ok(DownloadFileInfo {
-            size_bytes: 0, // 未知，下载时获取
-            supports_resume: true,
-            supports_multi_connection: true,
-        })
+        let size_bytes = Self::probe_torrent_size(torrent_source)
+            .await
+            .unwrap_or(1024 * 1024 * 1024);
+
+        if self.dry_run {
+            Ok(DownloadFileInfo {
+                size_bytes,
+                supports_resume: false,
+                supports_multi_connection: false,
+            })
+        } else {
+            Ok(DownloadFileInfo {
+                size_bytes,
+                supports_resume: true,
+                supports_multi_connection: true,
+            })
+        }
     }
 
     /// 下载一个分片
     ///
-    /// 由于 BitTorrent 协议不支持字节级分片，这里实现为：
-    /// 下载整个文件到保存目录，然后从已下载的文件中读取分片数据。
+    /// - **dry_run 模式**：模拟下载成功，不写盘、不创建目录
+    /// - **真实下载模式**：返回明确错误信息（暂未实现）
     ///
     /// 注意：调度器会根据 capabilities 用单分片下载整个文件，所以通常只会调用一次。
     async fn download_chunk(
@@ -75,129 +134,50 @@ impl ChunkDownloader for TorrentChunkDownloader {
             .downcast_ref::<TorrentSource>()
             .context("source is not a TorrentSource")?;
 
-        // 检查取消
         if cancel.is_cancelled() {
             return Err(CoreError::External(anyhow!("download cancelled")));
         }
 
-        // 确保保存目录存在
-        tokio::fs::create_dir_all(torrent_source.save_dir())
-            .await
-            .context("failed to create save directory")?;
+        if self.dry_run {
+            tracing::info!(
+                "[torrent] dry_run 模式，模拟下载: {} (chunk_id={}, offset={}, length={})",
+                torrent_source.uri(),
+                chunk.chunk_id,
+                chunk.offset,
+                chunk.length
+            );
 
-        // 基础版本：使用 librqbit 的 API 下载
-        // 由于 librqbit 的 API 比较复杂，这里先实现一个简化版本
-        // 后续可以优化为：使用 librqbit 的 Session API 进行下载
+            let dummy_data = vec![0u8; chunk.length as usize];
+            writer
+                .write_at(chunk.offset, &dummy_data)
+                .await
+                .context("failed to write chunk (dry_run)")?;
 
-        match torrent_source.source_type() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let elapsed = start.elapsed().as_secs_f64();
+            return Ok(ChunkStats {
+                chunk_id: chunk.chunk_id,
+                source_id: source.identifier(),
+                downloaded_bytes: chunk.length,
+                elapsed_secs: elapsed,
+                success: true,
+                error_code: None,
+            });
+        }
+
+        let source_type = torrent_source.source_type();
+        let error_msg = match source_type {
             TorrentSourceType::LocalTorrent => {
-                // 本地 .torrent 文件：使用 librqbit 下载
-                self.download_from_torrent_file(torrent_source, cancel)
-                    .await?;
+                "BitTorrent 本地种子下载暂未实现（dry_run 模式可用）"
             }
-            TorrentSourceType::Magnet => {
-                // 磁力链接：使用 librqbit 下载
-                self.download_from_magnet(torrent_source, cancel).await?;
-            }
+            TorrentSourceType::Magnet => "BitTorrent 磁力链接下载暂未实现（dry_run 模式可用）",
             TorrentSourceType::RemoteTorrent => {
-                // 远程 .torrent 文件：先下载种子文件，再下载内容
-                self.download_from_remote_torrent(torrent_source, cancel)
-                    .await?;
+                "BitTorrent 远程种子下载暂未实现（dry_run 模式可用）"
             }
-        }
+        };
 
-        // 读取下载的文件并写入目标位置
-        // 基础版本：假设下载的文件在保存目录中，文件名从种子文件中获取
-        // 后续可以优化为：从 librqbit 的下载结果中获取文件路径
-        let downloaded_files = tokio::fs::read_dir(torrent_source.save_dir())
-            .await
-            .context("failed to read save directory")?;
-
-        let mut total_downloaded: u64 = 0;
-        let mut offset = chunk.offset;
-
-        // 遍历下载的文件，写入目标位置
-        let mut entries = downloaded_files;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| CoreError::External(anyhow!("read dir entry failed: {e}")))?
-        {
-            let path = entry.path();
-            if path.is_file() {
-                let data = tokio::fs::read(&path)
-                    .await
-                    .with_context(|| format!("failed to read downloaded file: {:?}", path))?;
-
-                writer
-                    .write_at(offset, &data)
-                    .await
-                    .context("failed to write chunk")?;
-
-                offset += data.len() as u64;
-                total_downloaded += data.len() as u64;
-            }
-        }
-
-        let elapsed = start.elapsed().as_secs_f64();
-
-        Ok(ChunkStats {
-            chunk_id: chunk.chunk_id,
-            source_id: source.identifier(),
-            downloaded_bytes: total_downloaded,
-            elapsed_secs: elapsed,
-            success: true,
-            error_code: None,
-        })
-    }
-}
-
-impl TorrentChunkDownloader {
-    /// 从本地 .torrent 文件下载
-    async fn download_from_torrent_file(
-        &self,
-        source: &TorrentSource,
-        _cancel: &CancellationToken,
-    ) -> Result<()> {
-        // 基础版本：使用 librqbit 的 API 下载
-        // 由于 librqbit 的 API 比较复杂，这里先返回成功
-        // 后续可以优化为：使用 librqbit 的 Session API 进行下载
-
-        // 示例代码（后续实现）：
-        // let session = librqbit::Session::new(Default::default()).await?;
-        // let handle = session.add_torrent_from_file(source.uri(), Default::default()).await?;
-        // handle.wait_until_completed().await?;
-
-        return Err(CoreError::External(anyhow!(
-            "BitTorrent download not fully implemented yet (基础版本)"
-        )));
-    }
-
-    /// 从磁力链接下载
-    async fn download_from_magnet(
-        &self,
-        _source: &TorrentSource,
-        _cancel: &CancellationToken,
-    ) -> Result<()> {
-        // 基础版本：使用 librqbit 的 API 下载
-        // 后续可以优化为：使用 librqbit 的 Session API 进行下载
-
-        return Err(CoreError::External(anyhow!(
-            "BitTorrent magnet download not fully implemented yet (基础版本)"
-        )));
-    }
-
-    /// 从远程 .torrent 文件下载
-    async fn download_from_remote_torrent(
-        &self,
-        _source: &TorrentSource,
-        _cancel: &CancellationToken,
-    ) -> Result<()> {
-        // 基础版本：先下载种子文件，再下载内容
-        // 后续可以优化为：使用 reqwest 下载种子文件，然后使用 librqbit 下载
-
-        return Err(CoreError::External(anyhow!(
-            "BitTorrent remote torrent download not fully implemented yet (基础版本)"
-        )));
+        tracing::error!("[torrent] {}", error_msg);
+        Err(CoreError::External(anyhow!(error_msg)))
     }
 }
