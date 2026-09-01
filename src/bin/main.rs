@@ -101,7 +101,7 @@ fn create_source_and_downloader(
             let source = TorrentSource::new(url, save_dir)?;
             Ok((
                 Box::new(source),
-                Arc::new(TorrentChunkDownloader::new(timeout_secs)),
+                Arc::new(TorrentChunkDownloader::new(timeout_secs, false)),
             ))
         }
         #[cfg(not(feature = "torrent"))]
