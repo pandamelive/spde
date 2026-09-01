@@ -54,26 +54,25 @@ impl TorrentChunkDownloader {
     ///
     /// 仅支持本地 .torrent 文件，磁力链接和远程种子返回 None。
     async fn probe_torrent_size(source: &TorrentSource) -> Option<u64> {
+        const DEFAULT_SIZE: u64 = 1024 * 1024 * 1024;
+
         match source.source_type() {
             TorrentSourceType::LocalTorrent => {
-                match tokio::fs::metadata(source.uri()).await {
-                    Ok(meta) => {
-                        tracing::warn!(
-                            "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
-                            meta.len()
-                        );
-                        Some(1024 * 1024 * 1024)
-                    }
-                    Err(_) => None,
+                if let Ok(meta) = tokio::fs::metadata(source.uri()).await {
+                    tracing::warn!(
+                        "[torrent] .torrent 文件大小估算（未解析 bencode）: {} bytes",
+                        meta.len()
+                    );
                 }
+                Some(DEFAULT_SIZE)
             }
             TorrentSourceType::Magnet => {
                 tracing::warn!("[torrent] 磁力链接大小未知，使用默认值 1GB");
-                Some(1024 * 1024 * 1024)
+                Some(DEFAULT_SIZE)
             }
             TorrentSourceType::RemoteTorrent => {
                 tracing::warn!("[torrent] 远程种子大小未知，使用默认值 1GB");
-                Some(1024 * 1024 * 1024)
+                Some(DEFAULT_SIZE)
             }
         }
     }
@@ -97,8 +96,9 @@ impl ChunkDownloader for TorrentChunkDownloader {
             .downcast_ref::<TorrentSource>()
             .context("source is not a TorrentSource")?;
 
-        let size_bytes =
-            Self::probe_torrent_size(torrent_source).await.unwrap_or(1024 * 1024 * 1024);
+        let size_bytes = Self::probe_torrent_size(torrent_source)
+            .await
+            .unwrap_or(1024 * 1024 * 1024);
 
         if self.dry_run {
             Ok(DownloadFileInfo {
@@ -171,9 +171,7 @@ impl ChunkDownloader for TorrentChunkDownloader {
             TorrentSourceType::LocalTorrent => {
                 "BitTorrent 本地种子下载暂未实现（dry_run 模式可用）"
             }
-            TorrentSourceType::Magnet => {
-                "BitTorrent 磁力链接下载暂未实现（dry_run 模式可用）"
-            }
+            TorrentSourceType::Magnet => "BitTorrent 磁力链接下载暂未实现（dry_run 模式可用）",
             TorrentSourceType::RemoteTorrent => {
                 "BitTorrent 远程种子下载暂未实现（dry_run 模式可用）"
             }
