@@ -134,14 +134,14 @@ impl ChunkDownloader for TorrentChunkDownloader {
 
         if self.dry_run {
             tracing::info!(
-                "[torrent] dry_run 模式，模拟下载: {} (chunk_id={}, offset={}, size={})",
+                "[torrent] dry_run 模式，模拟下载: {} (chunk_id={}, offset={}, length={})",
                 torrent_source.uri(),
                 chunk.chunk_id,
                 chunk.offset,
-                chunk.size
+                chunk.length
             );
 
-            let dummy_data = vec![0u8; chunk.size as usize];
+            let dummy_data = vec![0u8; chunk.length as usize];
             writer
                 .write_at(chunk.offset, &dummy_data)
                 .await
@@ -153,7 +153,7 @@ impl ChunkDownloader for TorrentChunkDownloader {
             return Ok(ChunkStats {
                 chunk_id: chunk.chunk_id,
                 source_id: source.identifier(),
-                downloaded_bytes: chunk.size,
+                downloaded_bytes: chunk.length,
                 elapsed_secs: elapsed,
                 success: true,
                 error_code: None,
