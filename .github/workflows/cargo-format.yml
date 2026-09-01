@@ -1,4 +1,4 @@
-name: Cargo Format
+﻿name: Cargo Format
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ jobs:
 
       - name: Checkout PandaNetOS (path dependency)
         run: |
-          git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
+          git clone --depth 1 --branch feat/spde-new-architecture-deps https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
           ln -sf PandaNetOS ../pandanetos 2>/dev/null || true
 
       - name: Install Rust
