@@ -9,7 +9,9 @@
 //! 调度器会用单分片下载整个文件。
 
 pub mod downloader;
+pub mod fetcher;
 pub mod source;
 
 pub use downloader::TorrentChunkDownloader;
+pub use fetcher::TorrentPieceFetcher;
 pub use source::{TorrentSource, TorrentSourceType};

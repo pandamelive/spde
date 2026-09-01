@@ -1,9 +1,13 @@
-//! 新下载执行模块（基于 DownloadScheduler 的智能下载架构）
+//! 新下载执行模块（基于统一数据块抽象的智能下载架构）
 //!
 //! 使用新的四层架构：domain ← service ← infra ← cli
-//! 支持多源并发分片、自适应连接数、断点续传、镜像发现、进度平滑。
+//! 核心特性：
+//! - 统一数据块抽象（ChunkFetcher trait）：所有协议实现此接口，调度器协议无关
+//! - 智能源池（SourcePool）：源发现/健康检查/评分/调度/淘汰一体化
+//! - 自适应控制器（AdaptiveController）：动态调整并发数/分片大小/重试策略
+//! - 能力驱动：根据 probe 到的能力自动选择下载方式，不按协议分类
 //!
-//! 与旧下载器（`downloader/`）并存，通过配置开关切换。
+//! 支持协议：HTTP/HTTPS、FTP/FTPS、SSH/SFTP/SCP、BitTorrent（磁力链接/种子文件）、本地文件
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -13,24 +17,22 @@ use anyhow::Result;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
-use pandanetos::domain::DownloadProgress;
+use pandanetos::domain::{CancellationToken, DownloadProgress};
 
 use crate::cli::config::{SpdeConfig, TaskOverrides, TaskParams};
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
-use crate::domain::DownloadConfig;
-use crate::infra::file::downloader::FileChunkDownloader;
+use crate::domain::chunk_fetcher::ChunkFetcher;
+use crate::infra::disk::writer_factory::{create_writer, WriterType};
+use crate::infra::file::fetcher::LocalFileFetcher;
 use crate::infra::file::source::FileSource;
-use crate::infra::ftp::downloader::FtpChunkDownloader;
+use crate::infra::ftp::fetcher::FtpFetcher;
 use crate::infra::ftp::source::FtpSource;
-use crate::infra::http::downloader::HttpChunkDownloader;
-use crate::infra::http::mirror::dns::DnsMultiIpDiscoverer;
-use crate::infra::http::source::HttpSource;
-use crate::infra::ssh::downloader::SshChunkDownloader;
+use crate::infra::http::fetcher::{HttpRangeFetcher, HttpStreamFetcher};
+use crate::infra::ssh::fetcher::SftpFetcher;
 use crate::infra::ssh::source::SshSource;
-use crate::infra::torrent::downloader::TorrentChunkDownloader;
+use crate::infra::torrent::fetcher::TorrentPieceFetcher;
 use crate::infra::torrent::source::TorrentSource;
-use crate::service::adaptive::{AdaptiveConfig, AdaptiveController};
-use crate::service::scheduler::DownloadScheduler;
+use crate::service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig};
 
 /// 新下载任务执行结果
 pub struct NewDownloadResult {
@@ -45,6 +47,112 @@ pub struct NewDownloadResult {
 /// 把 Option<Duration> 转换成 u64 秒数
 fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
     d.map(|d| d.as_secs()).unwrap_or(1800)
+}
+
+/// 协议识别结果
+enum ProtocolType {
+    Http,
+    Https,
+    Ftp,
+    Ftps,
+    Ssh,
+    Sftp,
+    Scp,
+    Torrent,
+    Magnet,
+    File,
+    Unknown,
+}
+
+/// 识别 URL 协议类型
+fn detect_protocol(url: &str) -> ProtocolType {
+    if url.starts_with("magnet:") {
+        ProtocolType::Magnet
+    } else if url.starts_with("https://") {
+        ProtocolType::Https
+    } else if url.starts_with("http://") {
+        ProtocolType::Http
+    } else if url.starts_with("ftps://") {
+        ProtocolType::Ftps
+    } else if url.starts_with("ftp://") {
+        ProtocolType::Ftp
+    } else if url.starts_with("sftp://") {
+        ProtocolType::Sftp
+    } else if url.starts_with("scp://") {
+        ProtocolType::Scp
+    } else if url.starts_with("ssh://") {
+        ProtocolType::Ssh
+    } else if url.ends_with(".torrent") {
+        ProtocolType::Torrent
+    } else if FileSource::is_file_uri(url) {
+        ProtocolType::File
+    } else {
+        ProtocolType::Unknown
+    }
+}
+
+/// 根据协议类型创建对应的 ChunkFetcher
+///
+/// # 注意
+/// 对于 HTTP 协议，会先 probe 探测是否支持 Range，
+/// 然后选择 HttpRangeFetcher 或 HttpStreamFetcher。
+async fn create_fetcher(
+    url: &str,
+    protocol: ProtocolType,
+    timeout_secs: u64,
+    dry_run: bool,
+    save_dir: &std::path::Path,
+) -> Result<Arc<dyn ChunkFetcher>> {
+    match protocol {
+        ProtocolType::Http | ProtocolType::Https => {
+            // 先 probe 探测是否支持 Range
+            let probe_fetcher = HttpRangeFetcher::new(url, timeout_secs);
+            match probe_fetcher.probe().await {
+                Ok((_, caps)) => {
+                    if caps.supports_range {
+                        info!(url = %url, "HTTP source supports Range, using HttpRangeFetcher");
+                        Ok(Arc::new(HttpRangeFetcher::new(url, timeout_secs)))
+                    } else {
+                        info!(url = %url, "HTTP source does not support Range, using HttpStreamFetcher");
+                        Ok(Arc::new(HttpStreamFetcher::new(url, timeout_secs)))
+                    }
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "HTTP probe failed, falling back to HttpStreamFetcher");
+                    Ok(Arc::new(HttpStreamFetcher::new(url, timeout_secs)))
+                }
+            }
+        }
+        ProtocolType::Ftp | ProtocolType::Ftps => {
+            info!(url = %url, "using FtpFetcher");
+            Ok(Arc::new(FtpFetcher::new(url, timeout_secs)))
+        }
+        ProtocolType::Ssh | ProtocolType::Sftp | ProtocolType::Scp => {
+            info!(url = %url, "using SftpFetcher");
+            Ok(Arc::new(SftpFetcher::new(url, timeout_secs)))
+        }
+        ProtocolType::Torrent | ProtocolType::Magnet => {
+            info!(url = %url, "using TorrentPieceFetcher");
+            Ok(Arc::new(TorrentPieceFetcher::new(
+                url,
+                save_dir,
+                timeout_secs,
+                dry_run,
+            )))
+        }
+        ProtocolType::File => {
+            info!(url = %url, "using LocalFileFetcher");
+            let path = if url.starts_with("file://") {
+                url.strip_prefix("file://").unwrap()
+            } else {
+                url
+            };
+            Ok(Arc::new(LocalFileFetcher::new(path)))
+        }
+        ProtocolType::Unknown => {
+            anyhow::bail!("unsupported protocol: {}", url);
+        }
+    }
 }
 
 /// 执行新架构下载任务
@@ -84,125 +192,64 @@ pub async fn execute_download(
     if !params.dry_run {
         tokio::fs::create_dir_all(&params.save_dir).await?;
     }
-    let save_path = params.save_dir.join(filename);
 
-    // 超时转换
+    let save_path = params.save_dir.join(filename);
     let timeout_secs = duration_to_secs(params.timeout);
 
-    // 构建下载配置
-    let download_config = DownloadConfig {
-        max_connections: params.connections,
-        min_connections: 1,
-        chunk_size: 4 * 1024 * 1024, // 4MB
-        retry_times: params.retry as u32,
-        timeout_secs,
-        resume: params.resume,
-        skip_tls_verify: params.skip_tls_verify,
-        max_bandwidth_bps: 0,
-        enable_mirror_discovery: true,
-        enable_adaptive: true,
-        enable_progress_smoothing: true,
-        save_dir: params.save_dir.clone(),
-        dry_run: params.dry_run,
-    };
+    // 步骤 1：协议识别
+    let protocol = detect_protocol(url);
+    info!(url = %url, protocol = ?protocol, "protocol detected");
 
-    // 创建下载调度器
-    let scheduler = DownloadScheduler::new(download_config);
+    // 步骤 2：创建对应的 ChunkFetcher
+    let fetcher = create_fetcher(url, protocol, timeout_secs, params.dry_run, &params.save_dir).await?;
 
-    // 协议路由：根据 URL 协议类型选择对应的 Source 和 Downloader
-    let is_file = FileSource::is_file_uri(url);
-    let is_ftp = FtpSource::is_ftp_uri(url);
-    let is_ssh = SshSource::is_ssh_uri(url);
-    let is_torrent = TorrentSource::is_torrent_uri(url);
-    let is_http = url.starts_with("http://") || url.starts_with("https://");
-
-    // 注册镜像发现器（仅 HTTP 协议需要，File 协议不需要）
-    let mirror_bus = scheduler.mirror_bus();
-    if is_http {
-        mirror_bus
-            .register(Box::new(DnsMultiIpDiscoverer::new()))
-            .await;
-    }
-
-    // 创建源和下载器（协议无关的 Box<dyn DownloadSource> 和 Arc<dyn ChunkDownloader>）
-    let source: Box<dyn pandanetos::domain::DownloadSource>;
-    let downloader: Arc<dyn pandanetos::domain::ChunkDownloader>;
-
-    if is_file {
-        // File 协议
-        let file_source = FileSource::from_uri(url)?;
-        source = Box::new(file_source);
-        downloader = Arc::new(FileChunkDownloader::new());
-    } else if is_ftp {
-        // FTP/FTPS 协议
-        let ftp_source = FtpSource::new(url)?;
-        source = Box::new(ftp_source);
-        downloader = Arc::new(FtpChunkDownloader::new(
-            params.skip_tls_verify,
-            timeout_secs,
-        ));
-    } else if is_ssh {
-        // SSH/SFTP/SCP 协议
-        let ssh_source = SshSource::new(url)?;
-        source = Box::new(ssh_source);
-        downloader = Arc::new(SshChunkDownloader::new(timeout_secs));
-    } else if is_torrent {
-        // BitTorrent 协议（磁力链接/种子文件）
-        let save_dir = save_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let torrent_source = TorrentSource::new(url, save_dir)?;
-        source = Box::new(torrent_source);
-        downloader = Arc::new(TorrentChunkDownloader::new(timeout_secs, params.dry_run));
-    } else if is_http {
-        // HTTP/HTTPS 协议
-        source = Box::new(HttpSource::new(url.to_string()));
-        downloader = Arc::new(HttpChunkDownloader::new(
-            params.skip_tls_verify,
-            timeout_secs,
-        ));
-    } else {
-        // 暂不支持的协议
-        anyhow::bail!("unsupported protocol for new scheduler: {}", url);
-    }
-
-    // 创建进度通道
-    let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
-
-    // 创建自适应控制器
-    let adaptive_config = AdaptiveConfig {
-        initial_connections: 2,
-        min_connections: 1,
-        max_connections: params.connections,
-        adjust_interval_secs: 5,
-        speed_growth_threshold: 0.05,
-        stagnation_limit: 3,
-        failure_rate_threshold: 0.3,
-        adjust_step: 2,
-        enabled: true,
+    // 步骤 3：创建统一分片调度器
+    let scheduler_config = ChunkSchedulerConfig {
+        initial_chunk_size: 4 * 1024 * 1024,
+        min_chunk_size: 1 * 1024 * 1024,
+        max_chunk_size: 64 * 1024 * 1024,
+        max_retries: params.retry as u32,
+        initial_retry_interval_ms: 1000,
+        progress_interval_ms: 500,
         ..Default::default()
     };
-    let _adaptive = AdaptiveController::new(adaptive_config);
+    let scheduler = ChunkScheduler::new(scheduler_config);
+
+    // 步骤 4：添加源到调度器
+    scheduler.add_source(fetcher.clone()).await;
+
+    // 步骤 5：创建写入器
+    let writer_type = if params.dry_run {
+        WriterType::Null
+    } else {
+        WriterType::Disk
+    };
+
+    // 先 probe 获取文件大小（用于预分配）
+    let file_size = match fetcher.probe().await {
+        Ok((size, _)) => size,
+        Err(_) => 0,
+    };
+
+    let writer = create_writer(writer_type, Some(save_path.clone()), file_size)?;
+
+    // 步骤 6：创建进度通道
+    let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+
+    // 步骤 7：创建取消令牌
+    let cancel = CancellationToken::new();
 
     // 进度转发任务：从通道接收进度，推送给 PK
     let ws_clone = ws.clone();
     let task_name_clone = task_name.to_string();
     let progress_handle = tokio::spawn(async move {
         while let Some(progress) = progress_rx.recv().await {
-            // 计算百分比（DownloadProgress 没有 percent 字段，需要计算）
-            let percent = if progress.total_bytes > 0 {
-                progress.downloaded_bytes as f64 / progress.total_bytes as f64 * 100.0
-            } else {
-                0.0
-            };
             let elapsed_secs = started.elapsed().as_secs_f64();
-
             ws_clone
                 .send_task_progress(TaskProgressParams {
                     dispatch_id,
                     task_name: &task_name_clone,
-                    percent,
+                    percent: progress.percent,
                     downloaded_bytes: progress.downloaded_bytes,
                     total_size: progress.total_bytes,
                     speed_bps: progress.speed_bps,
@@ -213,27 +260,29 @@ pub async fn execute_download(
         }
     });
 
-    // 执行下载
-    let result = scheduler
-        .download(source, downloader, save_path.clone(), progress_tx)
-        .await;
+    // 步骤 8：执行下载
+    info!(url = %url, "starting download with new architecture");
+    let result = scheduler.execute(writer, progress_tx, cancel).await;
 
-    // 等待进度转发完成（progress_rx 已经被 move 到 progress_handle 闭包中）
+    // 等待进度转发完成
     let _ = progress_handle.await;
 
     let elapsed = started.elapsed().as_secs_f64();
 
-    let (success, file_size, downloaded, error_msg) = match result {
+    let (success, total_bytes, downloaded, error_msg) = match result {
         Ok(r) => {
             if r.success {
                 *last_error.lock().await = None;
+            } else {
+                *last_error.lock().await = r.error.clone();
             }
-            (r.success, r.total_bytes, r.downloaded_bytes, r.error_msg)
+            (r.success, r.total_bytes, r.total_bytes, r.error)
         }
         Err(e) => {
             let err_msg = e.to_string();
             *last_error.lock().await = Some(err_msg.clone());
-            (false, 0, 0, Some(err_msg))
+            error!(url = %url, error = %err_msg, "download failed");
+            (false, file_size, 0, Some(err_msg))
         }
     };
 
@@ -254,23 +303,32 @@ pub async fn execute_download(
         task_name,
         url,
         filename,
-        file_size,
+        file_size: total_bytes,
         downloaded_bytes: downloaded,
         elapsed_secs: elapsed,
-        avg_speed_mbps: avg_speed_mbps,
+        avg_speed_mbps,
         status,
-        success_chunks: 0, // 新架构后续补充
-        failed_chunks: 0,
+        success_chunks: if success { 1 } else { 0 },
+        failed_chunks: if success { 0 } else { 1 },
         error_msg: error_msg.as_deref(),
     })
     .await;
 
     active.fetch_sub(1, Ordering::Relaxed);
 
+    info!(
+        url = %url,
+        success = success,
+        downloaded = downloaded,
+        elapsed_secs = elapsed,
+        avg_speed_mbps = avg_speed_mbps,
+        "download completed"
+    );
+
     Ok(NewDownloadResult {
         dispatch_id,
         success,
-        file_size,
+        file_size: total_bytes,
         downloaded_bytes: downloaded,
         elapsed_secs: elapsed,
         error_msg,

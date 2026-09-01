@@ -1,267 +1,517 @@
-//! 分片调度器
+//! 统一分片调度器（协议无关）
 //!
-//! 维护分片队列，分配待下载分片给 worker，处理失败重试。
-//! 使用无锁队列（`crossbeam::SegQueue`）避免锁竞争，工作窃取式分配。
-//! 协议无关，只操作 [`pandanetos::domain::Chunk`] 和 [`ChunkSet`]。
+//! 这是下载器的核心组件，完全不关心底层协议。
+//! 只操作 ChunkFetcher trait 和 SourcePool。
+//!
+//! 职责：
+//! 1. probe 所有源，获取文件大小和能力
+//! 2. 根据能力决定下载方式（分片/顺序/单连接）
+//! 3. 切分片（如果支持 Range）
+//! 4. 多 worker 并发下载（自适应调整并发数）
+//! 5. 失败重试（指数退避）
+//! 6. 进度汇报
+//! 7. 完成统计
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam::queue::SegQueue;
-use pandanetos::domain::{Chunk, ChunkSet, ChunkState};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::task::JoinHandle;
+use tracing::{debug, error, info, warn};
 
-/// 待下载分片（队列元素）
-struct PendingChunk {
+use pandanetos::domain::{CancellationToken, DownloadProgress};
+use pandanetos::error::{CoreError, Result};
+
+use crate::domain::adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot};
+use crate::domain::chunk_fetcher::{ChunkFetcher, ChunkStats, SourceCapabilities};
+use crate::domain::source_pool::{ScoringConfig, SourcePool};
+
+/// 分片任务
+#[derive(Debug, Clone)]
+struct ChunkTask {
     chunk_id: u32,
     offset: u64,
     length: u64,
-    retry_count: u32,
-    /// 最早可下载时间（指数退避）
-    available_at: Instant,
+    retries: u32,
+    max_retries: u32,
 }
 
-/// 分片调度器
+/// 下载结果
+#[derive(Debug, Clone)]
+pub struct DownloadResult {
+    pub success: bool,
+    pub total_bytes: u64,
+    pub elapsed_ms: u64,
+    pub avg_speed_bps: u64,
+    pub total_chunks: u32,
+    pub success_chunks: u32,
+    pub failed_chunks: u32,
+    pub error: Option<String>,
+}
+
+/// 统一分片调度器配置
+#[derive(Debug, Clone)]
+pub struct ChunkSchedulerConfig {
+    pub initial_chunk_size: u64,
+    pub min_chunk_size: u64,
+    pub max_chunk_size: u64,
+    pub max_retries: u32,
+    pub initial_retry_interval_ms: u64,
+    pub progress_interval_ms: u64,
+    pub adaptive_config: AdaptiveConfig,
+    pub scoring_config: ScoringConfig,
+}
+
+impl Default for ChunkSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            initial_chunk_size: 4 * 1024 * 1024,
+            min_chunk_size: 1 * 1024 * 1024,
+            max_chunk_size: 64 * 1024 * 1024,
+            max_retries: 5,
+            initial_retry_interval_ms: 1000,
+            progress_interval_ms: 500,
+            adaptive_config: AdaptiveConfig::default(),
+            scoring_config: ScoringConfig::default(),
+        }
+    }
+}
+
+/// 统一分片调度器（协议无关）
 pub struct ChunkScheduler {
-    /// 分片集合（共享状态，用于统计和最终校验）
-    chunk_set: Arc<Mutex<ChunkSet>>,
-    /// 待下载分片队列（无锁，工作窃取）
-    pending_queue: SegQueue<PendingChunk>,
-    /// 已完成分片数（原子计数，用于快速判断是否全部完成）
-    completed_count: AtomicU64,
-    /// 下载中分片数
-    downloading_count: AtomicU64,
-    /// 总分片数
-    total_chunks: AtomicU64,
-    /// 最大重试次数
-    max_retries: u32,
-    /// 指数退避基数（秒）
-    backoff_base_secs: u64,
+    config: ChunkSchedulerConfig,
+    source_pool: Arc<SourcePool>,
+    adaptive: Arc<AdaptiveController>,
+    downloaded_bytes: Arc<std::sync::atomic::AtomicU64>,
+    active_workers: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl ChunkScheduler {
-    /// 创建一个新的分片调度器
-    pub fn new(chunk_set: Arc<Mutex<ChunkSet>>, max_retries: u32) -> Self {
+    pub fn new(config: ChunkSchedulerConfig) -> Self {
+        let source_pool = Arc::new(SourcePool::new(config.scoring_config.clone()));
+        let adaptive = Arc::new(AdaptiveController::new(config.adaptive_config.clone()));
+
         Self {
-            chunk_set,
-            pending_queue: SegQueue::new(),
-            completed_count: AtomicU64::new(0),
-            downloading_count: AtomicU64::new(0),
-            total_chunks: AtomicU64::new(0),
-            max_retries,
-            backoff_base_secs: 1,
+            config,
+            source_pool,
+            adaptive,
+            downloaded_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            active_workers: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
-    /// 初始化待下载队列（从 ChunkSet 中加载所有 pending 分片）
-    pub async fn init_queue(&self) {
-        let chunk_set = self.chunk_set.lock().await;
-        let total = chunk_set.chunks.len() as u64;
-
-        for chunk in &chunk_set.chunks {
-            if chunk.state == ChunkState::Pending || chunk.state == ChunkState::Failed {
-                self.pending_queue.push(PendingChunk {
-                    chunk_id: chunk.chunk_id,
-                    offset: chunk.offset,
-                    length: chunk.length,
-                    retry_count: chunk.retry_count,
-                    available_at: Instant::now(),
-                });
-            } else if chunk.state == ChunkState::Completed {
-                self.completed_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        // 更新总分片数
-        drop(chunk_set);
-        self.total_chunks.store(total, Ordering::Relaxed);
+    pub async fn add_source(&self, fetcher: Arc<dyn ChunkFetcher>) {
+        self.source_pool.add_source(fetcher).await;
     }
 
-    /// 获取下一个待下载分片
-    ///
-    /// 返回 None 表示当前没有可下载的分片（可能都在退避中，或全部完成）。
-    /// 调用方应该等待一段时间后重试，或检查是否全部完成。
-    pub async fn next_chunk(&self) -> Option<Chunk> {
-        let now = Instant::now();
-
-        // 尝试从队列取一个可用的分片
-        // 因为 SegQueue 是 FIFO，退避的分片可能在队首，需要跳过
-        // 简单实现：循环取，直到找到一个可用的，或队列为空
-        let mut skipped: Vec<PendingChunk> = Vec::new();
-
-        while let Some(pending) = self.pending_queue.pop() {
-            if pending.available_at <= now {
-                // 可用，返回
-                self.downloading_count.fetch_add(1, Ordering::Relaxed);
-
-                // 更新 ChunkSet 中的状态
-                let mut chunk_set = self.chunk_set.lock().await;
-                if let Some(chunk) = chunk_set.chunks.get_mut(pending.chunk_id as usize) {
-                    chunk.state = ChunkState::Downloading;
-                    chunk.retry_count = pending.retry_count;
-                }
-                drop(chunk_set);
-
-                // 把跳过的分片重新入队
-                for s in skipped {
-                    self.pending_queue.push(s);
-                }
-
-                return Some(Chunk {
-                    chunk_id: pending.chunk_id,
-                    offset: pending.offset,
-                    length: pending.length,
-                    state: ChunkState::Downloading,
-                    source_id: None,
-                    retry_count: pending.retry_count,
-                });
-            } else {
-                // 还在退避中，跳过
-                skipped.push(pending);
-            }
-        }
-
-        // 队列为空或都在退避中，把跳过的重新入队
-        for s in skipped {
-            self.pending_queue.push(s);
-        }
-
-        None
+    pub async fn add_sources(&self, fetchers: Vec<Arc<dyn ChunkFetcher>>) {
+        self.source_pool.add_sources(fetchers).await;
     }
 
-    /// 标记分片完成
-    pub async fn mark_completed(&self, chunk_id: u32, source_id: Option<String>) {
-        self.completed_count.fetch_add(1, Ordering::Relaxed);
-        self.downloading_count.fetch_sub(1, Ordering::Relaxed);
-
-        let mut chunk_set = self.chunk_set.lock().await;
-        if let Some(chunk) = chunk_set.chunks.get_mut(chunk_id as usize) {
-            chunk.state = ChunkState::Completed;
-            chunk.source_id = source_id;
-        }
+    pub fn source_pool(&self) -> Arc<SourcePool> {
+        self.source_pool.clone()
     }
 
-    /// 标记分片失败，重新入队（指数退避）
-    ///
-    /// 如果重试次数超过 max_retries，标记为最终失败（不再重试）。
-    pub async fn mark_failed(&self, chunk_id: u32, source_id: Option<String>) -> bool {
-        self.downloading_count.fetch_sub(1, Ordering::Relaxed);
+    pub fn adaptive_controller(&self) -> Arc<AdaptiveController> {
+        self.adaptive.clone()
+    }
 
-        let mut chunk_set = self.chunk_set.lock().await;
-        let retry_count = if let Some(chunk) = chunk_set.chunks.get_mut(chunk_id as usize) {
-            chunk.retry_count += 1;
-            chunk.state = ChunkState::Failed;
-            chunk.source_id = source_id.clone();
-            chunk.retry_count
+    pub async fn execute(
+        &self,
+        writer: Arc<Mutex<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        progress_tx: mpsc::Sender<DownloadProgress>,
+        cancel: CancellationToken,
+    ) -> Result<DownloadResult> {
+        let start = Instant::now();
+
+        info!(
+            source_count = self.source_pool.len().await,
+            "starting chunk scheduler"
+        );
+
+        let (file_size, capabilities) = self.probe_all_sources().await?;
+
+        info!(
+            file_size = file_size,
+            supports_range = capabilities.supports_range,
+            supports_multi_connection = capabilities.supports_multi_connection,
+            protocol = capabilities.protocol,
+            "probe completed"
+        );
+
+        if file_size == 0 {
+            return Err(CoreError::InvalidParam(
+                "file size is 0, cannot determine download strategy".into(),
+            ));
+        }
+
+        let chunk_tasks = if capabilities.supports_range {
+            self.create_chunk_tasks(file_size, &capabilities).await
+        } else {
+            info!("source does not support range, using single stream download");
+            vec![ChunkTask {
+                chunk_id: 0,
+                offset: 0,
+                length: file_size,
+                retries: 0,
+                max_retries: self.config.max_retries,
+            }]
+        };
+
+        let total_chunks = chunk_tasks.len() as u32;
+        info!(total_chunks = total_chunks, "chunk tasks created");
+
+        let progress_handle = self.spawn_progress_reporter(
+            file_size,
+            total_chunks,
+            progress_tx.clone(),
+            cancel.clone(),
+        );
+
+        let concurrency = if capabilities.supports_multi_connection {
+            self.adaptive.current_concurrency().await as usize
+        } else {
+            1
+        };
+
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let chunk_queue = Arc::new(Mutex::new(chunk_tasks));
+        let success_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let failure_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let mut worker_handles: Vec<JoinHandle<()>> = Vec::new();
+
+        for worker_id in 0..concurrency {
+            let handle = self.spawn_worker(
+                worker_id as u32,
+                chunk_queue.clone(),
+                semaphore.clone(),
+                writer.clone(),
+                success_count.clone(),
+                failure_count.clone(),
+                cancel.clone(),
+            );
+            worker_handles.push(handle);
+        }
+
+        for handle in worker_handles {
+            let _ = handle.await;
+        }
+
+        drop(progress_handle);
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let total_bytes = self
+            .downloaded_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let success_chunks = success_count.load(std::sync::atomic::Ordering::Relaxed);
+        let failed_chunks = failure_count.load(std::sync::atomic::Ordering::Relaxed);
+
+        let avg_speed_bps = if elapsed_ms > 0 {
+            total_bytes * 1000 / elapsed_ms
         } else {
             0
         };
 
-        if retry_count >= self.max_retries {
-            // 超过最大重试次数，最终失败
-            drop(chunk_set);
-            return false;
+        let result = DownloadResult {
+            success: failed_chunks == 0,
+            total_bytes,
+            elapsed_ms,
+            avg_speed_bps,
+            total_chunks,
+            success_chunks,
+            failed_chunks,
+            error: if failed_chunks > 0 {
+                Some(format!("{} chunks failed", failed_chunks))
+            } else {
+                None
+            },
+        };
+
+        info!(
+            success = result.success,
+            total_bytes = result.total_bytes,
+            elapsed_ms = result.elapsed_ms,
+            avg_speed_bps = result.avg_speed_bps,
+            success_chunks = result.success_chunks,
+            failed_chunks = result.failed_chunks,
+            "download completed"
+        );
+
+        Ok(result)
+    }
+
+    async fn probe_all_sources(&self) -> Result<(u64, SourceCapabilities)> {
+        let sources = self.source_pool.snapshot().await;
+
+        if sources.is_empty() {
+            return Err(CoreError::InvalidParam("no sources available".into()));
         }
 
-        // 计算退避时间：base * 2^retry_count，上限 60 秒
-        let backoff_secs = self
-            .backoff_base_secs
-            .saturating_mul(2u64.saturating_pow(retry_count.min(31)))
-            .min(60);
+        let mut file_size = 0u64;
+        let mut capabilities = SourceCapabilities::default();
 
-        // 重新入队
-        if let Some(chunk) = chunk_set.chunks.get(chunk_id as usize) {
-            self.pending_queue.push(PendingChunk {
-                chunk_id: chunk.chunk_id,
-                offset: chunk.offset,
-                length: chunk.length,
-                retry_count: chunk.retry_count,
-                available_at: Instant::now() + Duration::from_secs(backoff_secs),
+        for source in &sources {
+            match source.fetcher.probe().await {
+                Ok((size, caps)) => {
+                    if size > file_size {
+                        file_size = size;
+                    }
+                    if caps.supports_range {
+                        capabilities.supports_range = true;
+                    }
+                    if caps.supports_multi_connection {
+                        capabilities.supports_multi_connection = true;
+                    }
+                    if caps.supports_resume {
+                        capabilities.supports_resume = true;
+                    }
+                    capabilities = caps;
+                }
+                Err(e) => {
+                    warn!(
+                        source = %source.display_name,
+                        error = %e,
+                        "probe failed, skipping source"
+                    );
+                }
+            }
+        }
+
+        if file_size == 0 {
+            if let Some(first) = sources.first() {
+                capabilities = first.capabilities;
+            }
+        }
+
+        Ok((file_size, capabilities))
+    }
+
+    async fn create_chunk_tasks(
+        &self,
+        file_size: u64,
+        capabilities: &SourceCapabilities,
+    ) -> Vec<ChunkTask> {
+        let chunk_size = if let Some((min, max)) = capabilities.chunk_size_range {
+            min.max(self.config.min_chunk_size).min(max)
+        } else {
+            let adaptive_chunk_size = self.adaptive.current_chunk_size().await;
+            adaptive_chunk_size
+                .max(self.config.min_chunk_size)
+                .min(self.config.max_chunk_size)
+        };
+
+        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
+        let mut tasks = Vec::with_capacity(total_chunks as usize);
+
+        for i in 0..total_chunks {
+            let offset = i * chunk_size;
+            let length = if i == total_chunks - 1 {
+                file_size - offset
+            } else {
+                chunk_size
+            };
+
+            tasks.push(ChunkTask {
+                chunk_id: i as u32,
+                offset,
+                length,
+                retries: 0,
+                max_retries: self.config.max_retries,
             });
         }
 
-        true
+        tasks
     }
 
-    /// 是否所有分片都已完成
-    pub fn is_all_completed(&self) -> bool {
-        self.completed_count.load(Ordering::Relaxed) >= self.total_chunks.load(Ordering::Relaxed)
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_worker(
+        &self,
+        worker_id: u32,
+        chunk_queue: Arc<Mutex<Vec<ChunkTask>>>,
+        semaphore: Arc<Semaphore>,
+        writer: Arc<Mutex<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        success_count: Arc<std::sync::atomic::AtomicU32>,
+        failure_count: Arc<std::sync::atomic::AtomicU32>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
+        let source_pool = self.source_pool.clone();
+        let downloaded_bytes = self.downloaded_bytes.clone();
+        let active_workers = self.active_workers.clone();
+        let initial_retry_interval = self.config.initial_retry_interval_ms;
+
+        tokio::spawn(async move {
+            active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            loop {
+                if cancel.is_cancelled() {
+                    debug!(worker_id = worker_id, "worker cancelled");
+                    break;
+                }
+
+                let task = {
+                    let mut queue = chunk_queue.lock().await;
+                    queue.pop()
+                };
+
+                let task = match task {
+                    Some(t) => t,
+                    None => {
+                        debug!(worker_id = worker_id, "no more chunks, worker exiting");
+                        break;
+                    }
+                };
+
+                let _permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+
+                let fetcher = match source_pool.best_source().await {
+                    Some(f) => f,
+                    None => {
+                        warn!(worker_id = worker_id, "no source available, retrying chunk");
+                        let mut queue = chunk_queue.lock().await;
+                        queue.push(task);
+                        drop(queue);
+                        tokio::time::sleep(Duration::from_millis(initial_retry_interval)).await;
+                        continue;
+                    }
+                };
+
+                let result = {
+                    let mut writer_guard = writer.lock().await;
+                    fetcher
+                        .fetch_chunk(task.offset, task.length, &mut *writer_guard)
+                        .await
+                };
+
+                match result {
+                    Ok(stats) => {
+                        debug!(
+                            worker_id = worker_id,
+                            chunk_id = task.chunk_id,
+                            bytes = stats.bytes_downloaded,
+                            speed = stats.speed_bps,
+                            "chunk downloaded successfully"
+                        );
+
+                        downloaded_bytes.fetch_add(
+                            stats.bytes_downloaded,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        success_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        source_pool
+                            .record_success(
+                                &stats.source_id,
+                                stats.bytes_downloaded,
+                                stats.elapsed_ms,
+                                stats.speed_bps,
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        warn!(
+                            worker_id = worker_id,
+                            chunk_id = task.chunk_id,
+                            error = %e,
+                            retries = task.retries,
+                            "chunk download failed"
+                        );
+
+                        source_pool.record_failure(&fetcher.identifier()).await;
+
+                        if task.retries < task.max_retries {
+                            let mut retry_task = task.clone();
+                            retry_task.retries += 1;
+
+                            let backoff = initial_retry_interval * (2u64.pow(task.retries));
+                            tokio::time::sleep(Duration::from_millis(backoff)).await;
+
+                            let mut queue = chunk_queue.lock().await;
+                            queue.push(retry_task);
+                        } else {
+                            error!(
+                                chunk_id = task.chunk_id,
+                                "chunk failed after max retries"
+                            );
+                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+
+            active_workers.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        })
     }
 
-    /// 获取进度信息
-    pub fn progress(&self) -> (u64, u64) {
-        (
-            self.completed_count.load(Ordering::Relaxed),
-            self.total_chunks.load(Ordering::Relaxed),
-        )
-    }
+    fn spawn_progress_reporter(
+        &self,
+        total_bytes: u64,
+        _total_chunks: u32,
+        progress_tx: mpsc::Sender<DownloadProgress>,
+        cancel: CancellationToken,
+    ) -> JoinHandle<()> {
+        let downloaded_bytes = self.downloaded_bytes.clone();
+        let active_workers = self.active_workers.clone();
+        let adaptive = self.adaptive.clone();
+        let interval = self.config.progress_interval_ms;
 
-    /// 获取下载中分片数
-    pub fn downloading_count(&self) -> u64 {
-        self.downloading_count.load(Ordering::Relaxed)
-    }
+        tokio::spawn(async move {
+            let mut last_bytes = 0u64;
+            let mut last_time = Instant::now();
 
-    /// 获取待下载分片数（队列长度，可能包含退避中的）
-    pub fn pending_count(&self) -> usize {
-        self.pending_queue.len()
-    }
+            loop {
+                tokio::time::sleep(Duration::from_millis(interval)).await;
 
-    /// 获取 ChunkSet 引用
-    pub fn chunk_set(&self) -> Arc<Mutex<ChunkSet>> {
-        self.chunk_set.clone()
-    }
-}
+                if cancel.is_cancelled() {
+                    break;
+                }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+                let current_bytes = downloaded_bytes.load(std::sync::atomic::Ordering::Relaxed);
+                let elapsed = last_time.elapsed().as_millis() as u64;
+                let speed_bps = if elapsed > 0 {
+                    (current_bytes - last_bytes) * 1000 / elapsed
+                } else {
+                    0
+                };
 
-    #[tokio::test]
-    async fn test_basic_flow() {
-        let chunk_set = Arc::new(Mutex::new(ChunkSet::new(1024 * 1024, 256 * 1024))); // 4 个分片
-        let scheduler = ChunkScheduler::new(chunk_set.clone(), 3);
-        scheduler.init_queue().await;
+                let percent = if total_bytes > 0 {
+                    current_bytes as f64 / total_bytes as f64 * 100.0
+                } else {
+                    0.0
+                };
 
-        assert_eq!(scheduler.progress(), (0, 4));
-        assert!(!scheduler.is_all_completed());
+                let progress = DownloadProgress {
+                    downloaded_bytes: current_bytes,
+                    total_bytes,
+                    speed_bps,
+                    percent,
+                    active_connections: active_workers.load(std::sync::atomic::Ordering::Relaxed),
+                    elapsed_secs: 0,
+                };
 
-        // 取一个分片
-        let chunk = scheduler.next_chunk().await.unwrap();
-        assert_eq!(chunk.chunk_id, 0);
-        assert_eq!(scheduler.downloading_count(), 1);
+                if progress_tx.send(progress).await.is_err() {
+                    break;
+                }
 
-        // 标记完成
-        scheduler.mark_completed(0, None).await;
-        assert_eq!(scheduler.progress(), (1, 4));
+                let snapshot = DownloadSnapshot {
+                    total_speed_bps: speed_bps,
+                    active_connections: active_workers.load(std::sync::atomic::Ordering::Relaxed),
+                    recent_requests: 0,
+                    recent_successes: 0,
+                    recent_failures: 0,
+                    avg_latency_ms: 0.0,
+                    downloaded_bytes: current_bytes,
+                    total_bytes,
+                    timestamp: Instant::now(),
+                };
+                adaptive.update_snapshot(snapshot).await;
 
-        // 完成所有
-        for i in 1..4 {
-            let chunk = scheduler.next_chunk().await.unwrap();
-            assert_eq!(chunk.chunk_id, i);
-            scheduler.mark_completed(i, None).await;
-        }
-
-        assert!(scheduler.is_all_completed());
-    }
-
-    #[tokio::test]
-    async fn test_failed_retry() {
-        let chunk_set = Arc::new(Mutex::new(ChunkSet::new(256 * 1024, 256 * 1024))); // 1 个分片
-        let scheduler = ChunkScheduler::new(chunk_set.clone(), 2);
-        scheduler.init_queue().await;
-
-        // 第一次失败
-        let chunk = scheduler.next_chunk().await.unwrap();
-        let requeued = scheduler.mark_failed(chunk.chunk_id, None).await;
-        assert!(requeued); // 还可以重试
-
-        // 第二次失败（超过 max_retries）
-        let chunk = scheduler.next_chunk().await;
-        // 因为退避，可能取不到，等一下
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let chunk = scheduler.next_chunk().await.unwrap();
-        let requeued = scheduler.mark_failed(chunk.chunk_id, None).await;
-        assert!(!requeued); // 最终失败
+                last_bytes = current_bytes;
+                last_time = Instant::now();
+            }
+        })
     }
 }

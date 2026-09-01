@@ -6,9 +6,12 @@
 //! - `domain`  — 领域层（spde 特有的领域模型，核心抽象复用 pandanetos::domain）
 //! - `infra`   — 基础设施层（各协议适配器 + 磁盘IO实现）
 //!
-//! 已完全迁移到新架构，旧版 `downloader` 模块已移除。
+//! 新架构核心：
+//! - 统一数据块抽象（ChunkFetcher trait）：所有协议实现此接口，调度器协议无关
+//! - 智能源池（SourcePool）：源发现/健康检查/评分/调度/淘汰一体化
+//! - 自适应控制器（AdaptiveController）：动态调整并发数/分片大小/重试策略
+//! - 能力驱动：根据 probe 到的能力自动选择下载方式，不按协议分类
 
-// TODO: 修复以下警告后移除此 allow
 #![allow(clippy::all)]
 #![allow(unused_variables)]
 #![allow(unused_mut)]
@@ -19,31 +22,53 @@ pub mod domain;
 pub mod infra;
 pub mod service;
 
-// 智能下载器导出
+// ===== 新架构核心导出 =====
+
+/// 统一数据块获取接口（所有协议实现此 trait）
+pub use domain::chunk_fetcher::{ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities};
+
+/// 智能源池
+pub use domain::source_pool::{SourcePool, RatedSource, ScoringConfig, SourceHealth as PoolSourceHealth};
+
+/// 自适应控制器
+pub use domain::adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot, AdaptiveParams};
+
+/// 统一分片调度器（协议无关）
+pub use service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig, DownloadResult as SchedulerDownloadResult};
+
+// ===== 协议适配器（Fetcher 实现） =====
+
+/// HTTP Range Fetcher（支持范围请求的 HTTP 下载器）
+pub use infra::http::fetcher::range::HttpRangeFetcher;
+
+/// HTTP Stream Fetcher（不支持范围请求的 HTTP 流式下载器）
+pub use infra::http::fetcher::stream::HttpStreamFetcher;
+
+/// BitTorrent Piece Fetcher（BT 原生下载器）
+#[cfg(feature = "torrent")]
+pub use infra::torrent::fetcher::piece::TorrentPieceFetcher;
+
+/// FTP Fetcher
+#[cfg(feature = "ftp")]
+pub use infra::ftp::fetcher::FtpFetcher;
+
+/// SFTP/SSH Fetcher
+pub use infra::ssh::fetcher::SftpFetcher;
+
+/// 本地文件 Fetcher
+pub use infra::file::fetcher::LocalFileFetcher;
+
+// ===== 基础设施 =====
+
+/// 磁盘文件写入器
 pub use infra::disk::file_writer::FileChunkWriter;
-pub use infra::http::downloader::HttpChunkDownloader;
+
+// ===== 兼容导出（旧架构，后续逐步移除） =====
+
 pub use infra::http::mirror::dns::DnsMultiIpDiscoverer;
 pub use infra::http::source::HttpSource;
-pub use service::chunk_scheduler::ChunkScheduler;
-pub use service::mirror_bus::MirrorBus;
 pub use service::progress::ProgressSmoother;
-pub use service::scheduler::DownloadScheduler;
-pub use service::source_manager::SourceManager;
-pub use service::strategy::multi_source_chunked::MultiSourceChunkedStrategy;
+pub use service::controller::DownloadController;
 
-// 新架构协议适配器导出
-pub use infra::file::downloader::FileChunkDownloader;
-pub use infra::file::source::FileSource;
-#[cfg(feature = "ftp")]
-pub use infra::ftp::downloader::FtpChunkDownloader;
-#[cfg(feature = "ftp")]
-pub use infra::ftp::source::FtpSource;
-pub use infra::ssh::downloader::SshChunkDownloader;
-pub use infra::ssh::source::SshSource;
-#[cfg(feature = "torrent")]
-pub use infra::torrent::downloader::TorrentChunkDownloader;
 #[cfg(feature = "torrent")]
 pub use infra::torrent::source::TorrentSource;
-pub use service::adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveStats};
-pub use service::cdn_throttle::{CdnThrottleConfig, CdnThrottleDetector, CdnThrottleStats};
-pub use service::controller::DownloadController;
