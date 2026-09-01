@@ -30,10 +30,7 @@ pub struct TorrentChunkDownloader {
 
 impl Default for TorrentChunkDownloader {
     fn default() -> Self {
-        Self {
-            timeout_secs: 1800,
-            dry_run: true,
-        }
+        Self { timeout_secs: 1800, dry_run: true }
     }
 }
 
@@ -44,10 +41,7 @@ impl TorrentChunkDownloader {
     /// - `timeout_secs`: 连接超时（秒）
     /// - `dry_run`: 是否为 dry_run 模式（不落盘，模拟下载）
     pub fn new(timeout_secs: u64, dry_run: bool) -> Self {
-        Self {
-            timeout_secs,
-            dry_run,
-        }
+        Self { timeout_secs, dry_run }
     }
 
     /// 尝试解析 .torrent 文件获取文件大小
