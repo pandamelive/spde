@@ -266,7 +266,8 @@ impl ChunkScheduler {
                     capabilities.supports_resume |= caps.supports_resume;
                     capabilities.immutable |= caps.immutable;
                     // 取最大并发数
-                    capabilities.max_concurrency = capabilities.max_concurrency.max(caps.max_concurrency);
+                    capabilities.max_concurrency =
+                        capabilities.max_concurrency.max(caps.max_concurrency);
                     // 首个非空分片范围
                     if capabilities.chunk_size_range.is_none() {
                         capabilities.chunk_size_range = caps.chunk_size_range;
