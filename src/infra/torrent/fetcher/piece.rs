@@ -142,24 +142,44 @@ impl TorrentPieceFetcher {
                 .map_err(|e| CoreError::IO(format!("failed to create save dir: {}", e)))?;
         }
 
-        // 创建 librqbit Session
-        let session = librqbit::Session::new(state.save_dir.clone())
+        // 创建 librqbit Session（完全禁用 DHT，避免 Windows 环境下 UDP 绑定卡住；磁力链接通过 tracker 发现 peer）
+        let mut session_opts = librqbit::SessionOptions::default();
+        if let Some(ref mut dht) = session_opts.dht {
+            dht.persistence = None;
+        }
+        eprintln!("[bt] DHT enabled with persistence disabled");
+        let session = librqbit::Session::new_with_opts(state.save_dir.clone(), session_opts)
             .await
             .map_err(|e| CoreError::Network(format!("failed to create librqbit session: {}", e)))?;
+        eprintln!("[bt] librqbit session created successfully");
 
         // 创建 Api
+        eprintln!("[bt] creating Api...");
         let api = librqbit::Api::new(session.clone(), None);
 
         // 添加 torrent
+        eprintln!("[bt] adding torrent...");
         let add_result = if self.uri.starts_with("magnet:") {
-            api.api_add_torrent(librqbit::AddTorrent::Url(self.uri.clone().into()), None)
-                .await
+            api.api_add_torrent(
+                librqbit::AddTorrent::Url(self.uri.clone().into()),
+                Some(librqbit::AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
         } else if self.uri.ends_with(".torrent") {
             let data = tokio::fs::read(&self.uri)
                 .await
                 .map_err(|e| CoreError::IO(format!("failed to read torrent file: {}", e)))?;
-            api.api_add_torrent(librqbit::AddTorrent::TorrentFileBytes(data.into()), None)
-                .await
+            api.api_add_torrent(
+                librqbit::AddTorrent::TorrentFileBytes(data.into()),
+                Some(librqbit::AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
         } else {
             return Err(CoreError::InvalidParam(format!(
                 "unsupported torrent URI: {}",
@@ -172,13 +192,24 @@ impl TorrentPieceFetcher {
             .id
             .ok_or_else(|| CoreError::Network("torrent id is None".into()))?;
 
+        eprintln!("[bt] torrent added successfully, id={}", torrent_id);
         info!(torrent_id = torrent_id, "torrent added successfully");
 
         // 等待 metadata 下载完成
+        eprintln!(
+            "[bt] waiting for metadata... (timeout={}s)",
+            self.timeout_secs
+        );
         let metadata_timeout = Duration::from_secs(self.timeout_secs);
         let start = Instant::now();
 
         loop {
+            if start.elapsed().as_secs() % 10 == 0 {
+                eprintln!(
+                    "[bt] waiting for metadata... elapsed={:.0}s",
+                    start.elapsed().as_secs_f64()
+                );
+            }
             if start.elapsed() > metadata_timeout {
                 return Err(CoreError::Timeout(
                     "timeout waiting for torrent metadata".into(),
@@ -189,7 +220,6 @@ impl TorrentPieceFetcher {
                 api.api_torrent_details(librqbit::api::TorrentIdOrHash::Id(torrent_id))
             {
                 if details.total_pieces > 0 {
-                    state.total_pieces = details.total_pieces;
                     if let Some(files) = &details.files {
                         state.file_size = files.iter().map(|f| f.length).sum();
                     }
@@ -257,12 +287,18 @@ impl TorrentPieceFetcher {
         let total_pieces = state.total_pieces;
         let file_size = state.file_size;
         let piece_size_state = state.piece_size;
-        let piece_size = if piece_index == total_pieces - 1 {
-            file_size - (piece_index as u64 * piece_size_state)
+        // 修复整数溢出：total_pieces 为 0 时避免 underflow
+        let is_last_piece = total_pieces > 0 && piece_index == total_pieces - 1;
+        let piece_size = if is_last_piece && file_size > 0 {
+            let base = piece_index as u64 * piece_size_state;
+            if file_size > base {
+                file_size - base
+            } else {
+                piece_size_state
+            }
         } else {
             piece_size_state
         };
-
         drop(state);
 
         debug!(
@@ -273,15 +309,23 @@ impl TorrentPieceFetcher {
 
         // 使用流式 API 下载文件
         let file_id = 0;
+        eprintln!(
+            "[bt] fetch_chunk: piece_index={}, piece_size={}, skip_bytes={}",
+            piece_index,
+            piece_size,
+            piece_index as u64 * piece_size
+        );
         let mut stream = api
             .api_stream(torrent_id.into(), file_id)
             .await
             .map_err(|e| CoreError::Network(format!("failed to create torrent stream: {}", e)))?;
+        eprintln!("[bt] fetch_chunk: stream created, starting skip");
 
         // 跳过前面的 piece
         use tokio::io::AsyncReadExt;
         let skip_bytes = piece_index as u64 * piece_size;
         if skip_bytes > 0 {
+            eprintln!("[bt] fetch_chunk: skipping {} bytes...", skip_bytes);
             let mut skipped = 0u64;
             let mut skip_buf = vec![0u8; 64 * 1024];
             while skipped < skip_bytes {
@@ -300,6 +344,7 @@ impl TorrentPieceFetcher {
             }
         }
 
+        eprintln!("[bt] fetch_chunk: skip done, reading piece data...");
         // 读取当前 piece
         let mut downloaded = 0u64;
         let mut buf = vec![0u8; 64 * 1024];
@@ -332,6 +377,10 @@ impl TorrentPieceFetcher {
             "BT piece download completed"
         );
 
+        eprintln!(
+            "[bt] fetch_chunk: completed, downloaded={} bytes",
+            downloaded
+        );
         Ok(downloaded)
     }
 

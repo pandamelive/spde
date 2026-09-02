@@ -21,6 +21,7 @@ use uuid::Uuid;
 use pandanetos::domain::{CancellationToken, DownloadProgress};
 
 use crate::cli::config::{SpdeConfig, TaskOverrides, TaskParams};
+use crate::cli::p2p;
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
 use crate::domain::chunk_fetcher::ChunkFetcher;
 use crate::infra::disk::writer_factory::{create_writer, WriterType};
@@ -48,8 +49,8 @@ fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
 }
 
 /// 协议识别结果
-#[derive(Debug)]
-enum ProtocolType {
+#[derive(Debug, Clone, Copy)]
+pub enum ProtocolType {
     Http,
     Https,
     Ftp,
@@ -64,7 +65,7 @@ enum ProtocolType {
 }
 
 /// 识别 URL 协议类型
-fn detect_protocol(url: &str) -> ProtocolType {
+pub fn detect_protocol(url: &str) -> ProtocolType {
     if url.starts_with("magnet:") {
         ProtocolType::Magnet
     } else if url.starts_with("https://") {
@@ -95,7 +96,7 @@ fn detect_protocol(url: &str) -> ProtocolType {
 /// # 注意
 /// 对于 HTTP 协议，会先 probe 探测是否支持 Range，
 /// 然后选择 HttpRangeFetcher 或 HttpStreamFetcher。
-async fn create_fetcher(
+pub async fn create_fetcher(
     url: &str,
     protocol: ProtocolType,
     timeout_secs: u64,
@@ -180,12 +181,14 @@ pub async fn execute_download(
     active: &Arc<AtomicU32>,
     bytes_total: &Arc<AtomicU64>,
     last_error: &Arc<Mutex<Option<String>>>,
+    bt_manager: Option<&p2p::manager::BtManager>,
 ) -> Result<NewDownloadResult> {
     let started = Instant::now();
     active.fetch_add(1, Ordering::Relaxed);
 
     // 通知 PK 任务开始
     ws.send_task_started(dispatch_id).await;
+    eprintln!("[download] task report sent");
 
     // 创建保存目录（dry_run 模式下不创建目录，实现真正的不落盘）
     if !params.dry_run {
@@ -198,6 +201,103 @@ pub async fn execute_download(
     // 步骤 1：协议识别
     let protocol = detect_protocol(url);
     info!(url = %url, protocol = ?protocol, "protocol detected");
+
+    // P2P 协议（BT/磁力）走独立下载逻辑，不经过通用 ChunkScheduler
+    if matches!(protocol, ProtocolType::Torrent | ProtocolType::Magnet) {
+        info!(url = %url, "using P2P self-managed download path");
+
+        let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+        let cancel = CancellationToken::new();
+
+        let ws_clone = ws.clone();
+        let task_name_clone = task_name.to_string();
+        let started_clone = started;
+        let progress_handle = tokio::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                let elapsed_secs = started_clone.elapsed().as_secs_f64();
+                ws_clone
+                    .send_task_progress(TaskProgressParams {
+                        dispatch_id,
+                        task_name: &task_name_clone,
+                        percent: progress.percent,
+                        downloaded_bytes: progress.downloaded_bytes,
+                        total_size: progress.total_bytes,
+                        speed_bps: progress.speed_bps,
+                        active_connections: progress.active_connections,
+                        elapsed_secs,
+                    })
+                    .await;
+            }
+        });
+
+        let p2p_result = p2p::download_p2p(
+            protocol,
+            url,
+            &params.save_dir,
+            timeout_secs,
+            params.dry_run,
+            progress_tx,
+            cancel,
+            bt_manager,
+        )
+        .await;
+
+        let _ = progress_handle.await;
+
+        let elapsed = started.elapsed().as_secs_f64();
+        let (success, total_bytes, downloaded, error_msg) = match p2p_result {
+            Ok(r) => (r.success, r.total_bytes, r.downloaded_bytes, r.error_msg),
+            Err(e) => {
+                let err_msg = e.to_string();
+                error!(url = %url, error = %err_msg, "P2P download failed");
+                (false, 0, 0, Some(err_msg))
+            }
+        };
+
+        bytes_total.fetch_add(downloaded, Ordering::Relaxed);
+        let avg_speed_mbps = if elapsed > 0.0 {
+            downloaded as f64 / elapsed / 1024.0 / 1024.0
+        } else {
+            0.0
+        };
+        let status = if success { "success" } else { "failed" };
+
+        ws.send_task_report(TaskReportParams {
+            dispatch_id: Some(dispatch_id),
+            task_id: None,
+            task_name,
+            url,
+            filename,
+            file_size: total_bytes,
+            downloaded_bytes: downloaded,
+            elapsed_secs: elapsed,
+            avg_speed_mbps,
+            status,
+            success_chunks: if success { 1 } else { 0 },
+            failed_chunks: if success { 0 } else { 1 },
+            error_msg: error_msg.as_deref(),
+        })
+        .await;
+
+        active.fetch_sub(1, Ordering::Relaxed);
+
+        info!(
+            url = %url,
+            success = success,
+            downloaded = downloaded,
+            elapsed_secs = elapsed,
+            "P2P download completed"
+        );
+
+        return Ok(NewDownloadResult {
+            dispatch_id,
+            success,
+            file_size: total_bytes,
+            downloaded_bytes: downloaded,
+            elapsed_secs: elapsed,
+            error_msg,
+        });
+    }
 
     // 步骤 2：创建对应的 ChunkFetcher
     let fetcher = create_fetcher(
@@ -223,6 +323,7 @@ pub async fn execute_download(
 
     // 步骤 4：添加源到调度器
     scheduler.add_source(fetcher.clone()).await;
+    eprintln!("[download] task report sent");
 
     // 步骤 5：创建写入器
     let writer_type = if params.dry_run {
@@ -263,15 +364,23 @@ pub async fn execute_download(
                     elapsed_secs,
                 })
                 .await;
+            eprintln!("[download] task report sent");
         }
     });
 
     // 步骤 8：执行下载
     info!(url = %url, "starting download with new architecture");
+    eprintln!("[download] scheduler.execute returned");
     let result = scheduler.execute(writer, progress_tx, cancel).await;
+    eprintln!("[download] task report sent");
+    eprintln!(
+        "[download] result: {:?}",
+        result.as_ref().map(|r| (r.success, r.total_bytes))
+    );
 
     // 等待进度转发完成
     let _ = progress_handle.await;
+    eprintln!("[download] task report sent");
 
     let elapsed = started.elapsed().as_secs_f64();
 
@@ -319,6 +428,7 @@ pub async fn execute_download(
         error_msg: error_msg.as_deref(),
     })
     .await;
+    eprintln!("[download] task report sent");
 
     active.fetch_sub(1, Ordering::Relaxed);
 
