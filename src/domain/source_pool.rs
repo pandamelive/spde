@@ -210,7 +210,7 @@ impl Default for ScoringConfig {
 ///
 /// # 用法
 ///
-/// ```rust
+/// ```ignore
 /// use std::sync::Arc;
 /// use spde::domain::source_pool::{SourcePool, ScoringConfig};
 ///

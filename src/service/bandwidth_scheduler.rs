@@ -145,6 +145,7 @@ impl BandwidthScheduler {
         }
         tasks.insert(id, TaskInfo::new(id, priority));
         info!(task_id = %id, priority = priority, "task registered");
+        drop(tasks); // 释放锁，避免 adjust_allocation 死锁
         self.adjust_allocation();
         Ok(())
     }
@@ -152,7 +153,9 @@ impl BandwidthScheduler {
     /// 注销任务
     pub fn unregister_task(&self, id: Uuid) {
         let mut tasks = self.tasks.lock();
-        if tasks.remove(&id).is_some() {
+        let removed = tasks.remove(&id).is_some();
+        drop(tasks); // 释放锁，避免 adjust_allocation 死锁
+        if removed {
             info!(task_id = %id, "task unregistered");
             self.adjust_allocation();
         }

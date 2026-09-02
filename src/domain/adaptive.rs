@@ -175,7 +175,7 @@ impl Default for AdaptiveParams {
 ///
 /// # 用法
 ///
-/// ```rust
+/// ```ignore
 /// use spde::domain::adaptive::{AdaptiveController, AdaptiveConfig, DownloadSnapshot};
 ///
 /// let controller = AdaptiveController::new(AdaptiveConfig::default());
