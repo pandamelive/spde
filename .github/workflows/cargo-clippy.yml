@@ -1,4 +1,4 @@
-﻿name: Cargo Clippy
+name: Cargo Clippy
 
 on:
   pull_request:
@@ -8,6 +8,7 @@ jobs:
   clippy:
     name: Cargo Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +21,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Configure cargo sparse registry
+        run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << 'EOF'
+          [source.crates-io]
+          replace-with = "crates-io-sparse"
+
+          [source.crates-io-sparse]
+          registry = "sparse+https://index.crates.io/"
+
+          [net]
+          git-fetch-with-cli = true
+          EOF
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
