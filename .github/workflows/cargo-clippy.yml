@@ -25,16 +25,7 @@ jobs:
       - name: Configure cargo sparse registry
         run: |
           mkdir -p ~/.cargo
-          cat > ~/.cargo/config.toml << 'EOF'
-          [source.crates-io]
-          replace-with = "crates-io-sparse"
-
-          [source.crates-io-sparse]
-          registry = "sparse+https://index.crates.io/"
-
-          [net]
-          git-fetch-with-cli = true
-          EOF
+          printf '[source.crates-io]\nreplace-with = "crates-io-sparse"\n\n[source.crates-io-sparse]\nregistry = "sparse+https://index.crates.io/"\n\n[net]\ngit-fetch-with-cli = true\n' > ~/.cargo/config.toml
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
