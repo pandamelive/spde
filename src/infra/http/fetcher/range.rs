@@ -10,7 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, info};
+use tracing::debug;
 
 use pandanetos::error::{CoreError, Result};
 

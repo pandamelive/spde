@@ -13,7 +13,6 @@
 //! 4. 在 CLI 层的协议识别后调用 `download_p2p`
 
 use std::path::Path;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -25,6 +24,7 @@ use pandanetos::error::{CoreError, Result};
 use crate::cli::new_download::ProtocolType;
 
 pub mod bt;
+pub mod manager;
 
 /// P2P 下载器 trait（BT、电驴等协议实现此接口）
 #[async_trait]
@@ -59,6 +59,9 @@ pub trait P2PDownloader: Send + Sync {
 ///
 /// 根据协议类型选择对应的下载器执行下载。
 /// 非 P2P 协议不应调用此函数。
+///
+/// # 参数
+/// - manager: 可选的全局 BtManager（传入则复用预热的 DHT/LSD 和 trackers）
 pub async fn download_p2p(
     protocol: ProtocolType,
     url: &str,
@@ -67,25 +70,25 @@ pub async fn download_p2p(
     dry_run: bool,
     progress_tx: mpsc::Sender<DownloadProgress>,
     cancel: CancellationToken,
+    manager: Option<&manager::BtManager>,
 ) -> Result<DownloadResult> {
-    let downloader: Arc<dyn P2PDownloader> = match protocol {
-        ProtocolType::Torrent | ProtocolType::Magnet => Arc::new(bt::BtDownloader::new()),
-        // 未来电驴协议：ProtocolType::Ed2k => Arc::new(ed2k::Ed2kDownloader::new()),
+    match protocol {
+        ProtocolType::Torrent | ProtocolType::Magnet => {
+            if let Some(mgr) = manager {
+                info!(protocol = "bittorrent", url = %url, "starting P2P download via BtManager");
+                mgr.download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel).await
+            } else {
+                let downloader = bt::BtDownloader::new();
+                info!(protocol = downloader.protocol_name(), url = %url, "starting P2P download (standalone)");
+                downloader.download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel).await
+            }
+        }
+        // 未来电驴协议：ProtocolType::Ed2k => ...
         _ => {
-            return Err(CoreError::InvalidParam(format!(
+            Err(CoreError::InvalidParam(format!(
                 "unsupported P2P protocol: {:?}",
                 protocol
-            )));
+            )))
         }
-    };
-
-    info!(
-        protocol = downloader.protocol_name(),
-        url = %url,
-        "starting P2P download"
-    );
-
-    downloader
-        .download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel)
-        .await
+    }
 }

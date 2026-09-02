@@ -1,4 +1,4 @@
-﻿use anyhow::{Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::path::Path;
@@ -11,7 +11,6 @@ use tokio::sync::{mpsc, Semaphore};
 use pandanetos::domain::{ChunkDownloader, DownloadProgress, DownloadSource};
 use spde::cli::config::{load_config, resolve_task_params, SpdeConfig};
 use spde::cli::paths::SpdePaths;
-use spde::domain::DownloadConfig;
 use spde::infra::file::downloader::FileChunkDownloader;
 use spde::infra::file::source::FileSource;
 #[cfg(feature = "ftp")]
@@ -19,7 +18,6 @@ use spde::infra::ftp::downloader::FtpChunkDownloader;
 #[cfg(feature = "ftp")]
 use spde::infra::ftp::source::FtpSource;
 use spde::infra::http::downloader::HttpChunkDownloader;
-use spde::infra::http::mirror::dns::DnsMultiIpDiscoverer;
 use spde::infra::http::source::HttpSource;
 use spde::infra::ssh::downloader::SshChunkDownloader;
 use spde::infra::ssh::source::SshSource;
@@ -62,6 +60,7 @@ pub enum SubCommand {
 }
 
 /// 根据 URL 协议类型创建对应的 Source 和 Downloader
+#[allow(dead_code)]
 fn create_source_and_downloader(
     url: &str,
     save_path: &Path,
@@ -150,6 +149,9 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     let semaphore = Arc::new(Semaphore::new(cfg.global.max_concurrent.max(1) as usize));
 
+    // Init global BT manager (DHT/LSD warmup, tracker maintenance)
+    let bt_manager = p2p::manager::BtManager::new(&save_dir).await?;
+
     let overall_start = Instant::now();
     let history_file = paths.run_history_file.clone();
 
@@ -182,6 +184,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         let dry_run = params.dry_run;
         let task_save_dir = params.save_dir.clone();
 
+        let bt_manager = bt_manager.clone();
         let handle = tokio::spawn(async move {
             eprintln!("[start] {} -> {}", name, url);
             let started = Instant::now();
@@ -224,6 +227,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                     dry_run,
                     progress_tx,
                     cancel,
+                    Some(&bt_manager),
                 )
                 .await;
                 drop(progress_handle);
@@ -298,7 +302,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             // 步骤 5：创建统一分片调度器
             let scheduler_config = ChunkSchedulerConfig {
                 initial_chunk_size: 4 * 1024 * 1024,
-                min_chunk_size: 1 * 1024 * 1024,
+                min_chunk_size: 1024 * 1024,
                 max_chunk_size: 64 * 1024 * 1024,
                 max_retries: 3,
                 initial_retry_interval_ms: 1000,

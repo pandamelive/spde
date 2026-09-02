@@ -198,6 +198,9 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     };
     let global_cfg = Arc::new(Mutex::new(global_cfg));
 
+    // Init global BT manager (DHT/LSD warmup, tracker maintenance)
+    let bt_manager = crate::cli::p2p::manager::BtManager::new(&paths.base_dir).await?;
+
     // 7. 共享状态
     let active = Arc::new(AtomicU32::new(0));
     let bytes_total = Arc::new(AtomicU64::new(0));
@@ -366,6 +369,7 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     permit,
                     paths.base_dir.clone(),
                     task_done_tx.clone(),
+                    bt_manager.clone(),
                 );
                 let dispatch_id = handle.0;
                 running
@@ -490,6 +494,7 @@ fn spawn_download_task(
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<Uuid>,
+    bt_manager: Arc<crate::cli::p2p::manager::BtManager>,
 ) -> (Uuid, JoinHandle<()>, Arc<DownloadController>) {
     let dispatch_id = task.dispatch_id;
     let _task_id = Some(task.task_id);
@@ -521,6 +526,7 @@ fn spawn_download_task(
             &active,
             &bytes_total,
             &last_error,
+            Some(&bt_manager),
         )
         .await;
 

@@ -1,4 +1,4 @@
-﻿//! 新下载执行模块（基于统一数据块抽象的智能下载架构）
+//! 新下载执行模块（基于统一数据块抽象的智能下载架构）
 //!
 //! 使用新的四层架构：domain ← service ← infra ← cli
 //! 核心特性：
@@ -181,6 +181,7 @@ pub async fn execute_download(
     active: &Arc<AtomicU32>,
     bytes_total: &Arc<AtomicU64>,
     last_error: &Arc<Mutex<Option<String>>>,
+    bt_manager: Option<&p2p::manager::BtManager>,
 ) -> Result<NewDownloadResult> {
     let started = Instant::now();
     active.fetch_add(1, Ordering::Relaxed);
@@ -236,6 +237,7 @@ pub async fn execute_download(
             params.dry_run,
             progress_tx,
             cancel,
+            bt_manager,
         )
         .await;
 
