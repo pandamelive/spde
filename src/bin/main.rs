@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::path::Path;
@@ -27,7 +27,8 @@ use spde::infra::ssh::source::SshSource;
 use spde::infra::torrent::downloader::TorrentChunkDownloader;
 #[cfg(feature = "torrent")]
 use spde::infra::torrent::source::TorrentSource;
-use spde::cli::new_download::{create_fetcher, detect_protocol};
+use spde::cli::new_download::{create_fetcher, detect_protocol, ProtocolType};
+use spde::cli::p2p;
 use spde::infra::disk::writer_factory::{create_writer, WriterType};
 use spde::service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig};
 use pandanetos::domain::CancellationToken;
@@ -188,6 +189,77 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             // 步骤 1：协议识别
             let protocol = detect_protocol(&url);
             eprintln!("[protocol] {}: {:?}", name, protocol);
+            // P2P 协议（BT/磁力）走独立下载逻辑，不经过通用 ChunkScheduler
+            if matches!(protocol, ProtocolType::Torrent | ProtocolType::Magnet) {
+                eprintln!("[p2p] {}: using self-managed download path", name);
+
+                let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+                let cancel = CancellationToken::new();
+
+                let progress_name = name.clone();
+                let progress_handle = tokio::spawn(async move {
+                    while let Some(progress) = progress_rx.recv().await {
+                        let percent = if progress.total_bytes > 0 {
+                            progress.downloaded_bytes as f64 / progress.total_bytes as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        let speed_mbps = progress.speed_bps as f64 / 1024.0 / 1024.0;
+                        eprintln!(
+                            "[progress] {}: {:.1}% ({}/{} MB) {:.2} MB/s",
+                            progress_name,
+                            percent,
+                            progress.downloaded_bytes / 1024 / 1024,
+                            progress.total_bytes / 1024 / 1024,
+                            speed_mbps
+                        );
+                    }
+                });
+
+                let p2p_result = p2p::download_p2p(
+                    protocol,
+                    &url,
+                    &task_save_dir,
+                    timeout_secs,
+                    dry_run,
+                    progress_tx,
+                    cancel,
+                )
+                .await;
+                drop(progress_handle);
+                drop(permit);
+
+                let elapsed_secs = started.elapsed().as_secs_f64();
+                match p2p_result {
+                    Ok(r) => {
+                        eprintln!(
+                            "[done] {}: success={}, downloaded={}MB, pieces={}/{}, elapsed={:.1}s",
+                            name,
+                            r.success,
+                            r.downloaded_bytes / 1024 / 1024,
+                            r.success_chunks,
+                            r.success_chunks + r.failed_chunks,
+                            elapsed_secs
+                        );
+                        let output = json!({
+                            "total_size": r.total_bytes,
+                            "downloaded_bytes": r.downloaded_bytes,
+                            "elapsed_secs": elapsed_secs,
+                            "avg_speed_mbps": if elapsed_secs > 0.0 { r.downloaded_bytes as f64 / elapsed_secs / 1024.0 / 1024.0 } else { 0.0 },
+                            "status": if r.success { "success" } else { "failed" },
+                            "is_success": r.success,
+                            "success_chunks": r.success_chunks,
+                            "failed_chunks": r.failed_chunks,
+                            "error_msg": r.error_msg
+                        });
+                        return (name, url, filename, Ok(output));
+                    }
+                    Err(e) => {
+                        eprintln!("[error] {}: {:#}", name, e);
+                        return (name, url, filename, Err(e.to_string()));
+                    }
+                }
+            }
 
             // 步骤 2：创建对应的 ChunkFetcher
             let fetcher = match create_fetcher(&url, protocol, timeout_secs, dry_run, &task_save_dir).await {

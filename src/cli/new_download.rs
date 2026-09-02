@@ -21,6 +21,7 @@ use uuid::Uuid;
 use pandanetos::domain::{CancellationToken, DownloadProgress};
 
 use crate::cli::config::{SpdeConfig, TaskOverrides, TaskParams};
+use crate::cli::p2p;
 use crate::cli::ws_client::{TaskProgressParams, TaskReportParams, WsClient};
 use crate::domain::chunk_fetcher::ChunkFetcher;
 use crate::infra::disk::writer_factory::{create_writer, WriterType};
@@ -198,6 +199,98 @@ pub async fn execute_download(
     // 步骤 1：协议识别
     let protocol = detect_protocol(url);
     info!(url = %url, protocol = ?protocol, "protocol detected");
+
+    // P2P 协议（BT/磁力）走独立下载逻辑，不经过通用 ChunkScheduler
+    if matches!(protocol, ProtocolType::Torrent | ProtocolType::Magnet) {
+        info!(url = %url, "using P2P self-managed download path");
+
+        let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+        let cancel = CancellationToken::new();
+
+        let ws_clone = ws.clone();
+        let task_name_clone = task_name.to_string();
+        let started_clone = started;
+        let progress_handle = tokio::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                let elapsed_secs = started_clone.elapsed().as_secs_f64();
+                ws_clone
+                    .send_task_progress(TaskProgressParams {
+                        dispatch_id,
+                        task_name: &task_name_clone,
+                        percent: progress.percent,
+                        downloaded_bytes: progress.downloaded_bytes,
+                        total_size: progress.total_bytes,
+                        speed_bps: progress.speed_bps,
+                        active_connections: progress.active_connections,
+                        elapsed_secs,
+                    })
+                    .await;
+            }
+        });
+
+        let p2p_result = p2p::download_p2p(
+            protocol,
+            url,
+            &params.save_dir,
+            timeout_secs,
+            params.dry_run,
+            progress_tx,
+            cancel,
+        )
+        .await;
+
+        let _ = progress_handle.await;
+
+        let elapsed = started.elapsed().as_secs_f64();
+        let (success, total_bytes, downloaded, error_msg) = match p2p_result {
+            Ok(r) => (r.success, r.total_bytes, r.downloaded_bytes, r.error_msg),
+            Err(e) => {
+                let err_msg = e.to_string();
+                error!(url = %url, error = %err_msg, "P2P download failed");
+                (false, 0, 0, Some(err_msg))
+            }
+        };
+
+        bytes_total.fetch_add(downloaded, Ordering::Relaxed);
+        let avg_speed_mbps = if elapsed > 0.0 { downloaded as f64 / elapsed / 1024.0 / 1024.0 } else { 0.0 };
+        let status = if success { "success" } else { "failed" };
+
+        ws.send_task_report(TaskReportParams {
+            dispatch_id: Some(dispatch_id),
+            task_id: None,
+            task_name,
+            url,
+            filename,
+            file_size: total_bytes,
+            downloaded_bytes: downloaded,
+            elapsed_secs: elapsed,
+            avg_speed_mbps,
+            status,
+            success_chunks: if success { 1 } else { 0 },
+            failed_chunks: if success { 0 } else { 1 },
+            error_msg: error_msg.as_deref(),
+        })
+        .await;
+
+        active.fetch_sub(1, Ordering::Relaxed);
+
+        info!(
+            url = %url,
+            success = success,
+            downloaded = downloaded,
+            elapsed_secs = elapsed,
+            "P2P download completed"
+        );
+
+        return Ok(NewDownloadResult {
+            dispatch_id,
+            success,
+            file_size: total_bytes,
+            downloaded_bytes: downloaded,
+            elapsed_secs: elapsed,
+            error_msg,
+        });
+    }
 
     // 步骤 2：创建对应的 ChunkFetcher
     let fetcher = create_fetcher(
