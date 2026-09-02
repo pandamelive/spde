@@ -30,6 +30,7 @@ impl HttpSource {
                 max_concurrency: 64,
                 chunk_size_range: Some((4 * 1024 * 1024, 64 * 1024 * 1024)),
                 immutable: false,
+                protocol: "http",
             }
         } else {
             SourceCapabilities::default()
@@ -66,7 +67,7 @@ impl HttpSource {
 }
 
 impl DownloadSource for HttpSource {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         if self.is_https() {
             "https"
         } else {

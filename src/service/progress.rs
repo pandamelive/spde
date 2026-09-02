@@ -198,11 +198,19 @@ impl ProgressSmoother {
             }
         }
 
+        let percent = if self.total_bytes > 0 {
+            downloaded as f64 / self.total_bytes as f64 * 100.0
+        } else {
+            0.0
+        };
+        let elapsed_secs = self.start_time.elapsed().as_secs_f64();
         DownloadProgress {
             downloaded_bytes: downloaded,
             total_bytes: self.total_bytes,
             speed_bps: speed,
             active_connections: active,
+            percent,
+            elapsed_secs,
         }
     }
 

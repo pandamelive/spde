@@ -6,7 +6,9 @@
 //! 本地文件支持随机读取和多连接并发读取，适合 SSD 场景下的多线程复制。
 
 pub mod downloader;
+pub mod fetcher;
 pub mod source;
 
 pub use downloader::FileChunkDownloader;
+pub use fetcher::LocalFileFetcher;
 pub use source::FileSource;

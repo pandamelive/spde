@@ -81,7 +81,7 @@ impl TorrentSource {
 }
 
 impl DownloadSource for TorrentSource {
-    fn protocol(&self) -> &str {
+    fn protocol(&self) -> &'static str {
         "torrent"
     }
 
@@ -128,6 +128,7 @@ impl DownloadSource for TorrentSource {
             max_concurrency: 16,       // 最大 peer 连接数
             chunk_size_range: None,    // 无特殊要求（调度器会用单分片下载整个文件）
             immutable: true,           // 种子文件内容不可变
+            protocol: "torrent",
         }
     }
 

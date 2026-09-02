@@ -7,7 +7,9 @@
 //! 支持多连接并发下载不同分片。
 
 pub mod downloader;
+pub mod fetcher;
 pub mod source;
 
 pub use downloader::FtpChunkDownloader;
+pub use fetcher::FtpFetcher;
 pub use source::FtpSource;

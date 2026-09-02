@@ -84,7 +84,10 @@ impl DownloadStrategy for MultiSourceChunkedStrategy {
 
         // 初始化组件
         let source_manager = Arc::new(SourceManager::new());
-        let chunk_scheduler = Arc::new(ChunkScheduler::new(chunk_set.clone(), self.max_retries));
+        let chunk_scheduler = Arc::new(ChunkScheduler::new_legacy(
+            chunk_set.clone(),
+            self.max_retries,
+        ));
         let progress_smoother = Arc::new(ProgressSmoother::new(total_size, progress_tx));
 
         // 把源转成 Arc 并注册

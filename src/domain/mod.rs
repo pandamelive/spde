@@ -1,8 +1,22 @@
 //! SPDE 领域层
 //!
-//! 核心下载抽象（Chunk / DownloadSource / ChunkDownloader / MirrorDiscoverer /
-//! DownloadStrategy / ChunkWriter）定义在 pandanetos::domain 中，供整个生态复用。
-//! 本模块放置 spde 特有的领域模型和扩展。
+//! 核心下载抽象定义在 pandanetos::domain 中，供整个生态复用。
+//! 本模块放置 spde 特有的领域模型和扩展，包括：
+//! - chunk_fetcher: 统一数据块获取接口（协议无关核心抽象）
+//! - source_pool: 智能源池（源发现/健康检查/评分/调度/淘汰）
+//! - adaptive: 自适应控制器（动态调整并发数/分片大小/重试策略）
+
+pub mod adaptive;
+pub mod chunk_fetcher;
+pub mod source_pool;
+
+pub use adaptive::{AdaptiveConfig, AdaptiveController, AdaptiveParams, DownloadSnapshot};
+pub use chunk_fetcher::{
+    ChunkFetcher, ChunkStats as FetcherChunkStats, SourceCapabilities as FetcherSourceCapabilities,
+};
+pub use source_pool::{
+    RatedSource, ScoringConfig, SourceDiscoverer, SourceHealth as PoolSourceHealth, SourcePool,
+};
 
 pub use pandanetos::domain::{
     CancellationToken, Chunk, ChunkDownloader, ChunkSet, ChunkState, ChunkStats, ChunkWriter,

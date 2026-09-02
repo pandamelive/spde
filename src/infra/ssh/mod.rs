@@ -9,7 +9,9 @@
 //! 调度器会用单分片下载整个文件。
 
 pub mod downloader;
+pub mod fetcher;
 pub mod source;
 
 pub use downloader::SshChunkDownloader;
+pub use fetcher::SftpFetcher;
 pub use source::SshSource;

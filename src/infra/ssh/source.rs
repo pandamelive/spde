@@ -104,8 +104,8 @@ impl SshSource {
 }
 
 impl DownloadSource for SshSource {
-    fn protocol(&self) -> &str {
-        &self.scheme
+    fn protocol(&self) -> &'static str {
+        "sftp"
     }
 
     fn identifier(&self) -> String {
@@ -134,6 +134,7 @@ impl DownloadSource for SshSource {
             max_concurrency: 1,         // 只能单连接
             chunk_size_range: None,     // 无特殊要求（调度器会用单分片下载整个文件）
             immutable: true,            // 远程文件内容不可变
+            protocol: "ssh",
         }
     }
 
