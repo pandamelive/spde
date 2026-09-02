@@ -266,6 +266,13 @@ async fn connection_loop(
                                                     Err(e) => log!("[ws] delete failed: {e}"),
                                                 }
                                             }
+                                            ServerMsg::ServiceChanged { agent_type, change_type, .. } => {
+                                                log!("[ws] service_changed: agent_type={}, change_type={:?}", agent_type, change_type);
+                                                // 服务注册中心变化，后续可触发 PDC 等服务的重新发现
+                                            }
+                                            ServerMsg::Discover(_task) => {
+                                                log!("[ws] discover task received (not yet implemented)");
+                                            }
                                         }
                                     }
                                 }

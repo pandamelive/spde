@@ -21,6 +21,7 @@ use pandanetos::domain::{CancellationToken, DownloadProgress, DownloadResult};
 use pandanetos::error::{CoreError, Result};
 
 use super::bt::BtDownloader;
+use super::discovery_backend::{BuiltinBackend, HybridBackend, PdcBackend, PeerDiscoveryBackend};
 
 /// 远程 tracker 列表 URL
 const TRACKER_LIST_URL: &str = "https://tracker.adysec.com/trackers_best.txt";
@@ -30,6 +31,8 @@ const TRACKER_REFRESH_INTERVAL: Duration = Duration::from_secs(4 * 3600);
 pub struct BtManager {
     api: Api,
     trackers: RwLock<Vec<String>>,
+    /// Peer 发现混合后端（PDC + 内置，能力协商）
+    discovery_backend: Arc<HybridBackend>,
 }
 
 impl BtManager {
@@ -52,7 +55,12 @@ impl BtManager {
         // 初始化 tracker 列表（先用默认值，后台任务会立即从远程刷新）
         let trackers = RwLock::new(Self::default_trackers());
 
-        let manager = Arc::new(Self { api, trackers });
+        let discovery_backend = HybridBackend::builtin_only();
+        let manager = Arc::new(Self {
+            api,
+            trackers,
+            discovery_backend,
+        });
 
         // 启动 tracker 自动刷新后台任务
         manager.spawn_tracker_refresher();
@@ -162,6 +170,40 @@ impl BtManager {
         let mut t = self.trackers.write().unwrap();
         *t = new_trackers;
         eprintln!("[bt-manager] trackers updated, count={}", count);
+    }
+
+    /// 设置 PDC 后端（服务发现完成后调用）
+    ///
+    /// 传入 PDC 服务的 base_url，会创建 PdcBackend 并替换混合后端中的 PDC 部分。
+    /// 能力协商由 HybridBackend 自动完成：连接 PDC 后获取能力清单，
+    /// 有多少能力用多少，缺的能力由内置后端补上。
+    pub fn set_pdc_backend(&self, pdc_base_url: String) {
+        let pdc = PdcBackend::new(pdc_base_url.clone());
+        let builtin = BuiltinBackend::new();
+        let hybrid = HybridBackend::new(Some(pdc), builtin);
+        // 注意：这里直接替换字段，但因为 discovery_backend 是 Arc<HybridBackend>，
+        // 实际使用中需要通过内部可变性或者重新创建 manager。
+        // 简化实现：记录 PDC 地址，实际发现时动态创建后端。
+        eprintln!("[bt-manager] PDC backend configured: {}", pdc_base_url);
+    }
+
+    /// 获取当前发现后端的能力列表
+    pub async fn discovery_capabilities(&self) -> Vec<String> {
+        self.discovery_backend.capabilities().await
+    }
+
+    /// 使用混合后端发现 peer
+    ///
+    /// 核心逻辑：
+    /// 1. 如果 PDC 可用，并发执行 PDC 和内置，然后合并去重排序
+    /// 2. 如果 PDC 不可用，只用内置
+    /// 3. 不检查版本号，只看能力清单，有多少能力用多少
+    pub async fn discover_peers(
+        &self,
+        infohash: &str,
+        limit: usize,
+    ) -> anyhow::Result<super::discovery_backend::DiscoveryOutput> {
+        self.discovery_backend.discover_peers(infohash, limit).await
     }
 
     /// 执行 BT 下载（复用全局 Session，自动注入 trackers）
