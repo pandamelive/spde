@@ -76,19 +76,20 @@ pub async fn download_p2p(
         ProtocolType::Torrent | ProtocolType::Magnet => {
             if let Some(mgr) = manager {
                 info!(protocol = "bittorrent", url = %url, "starting P2P download via BtManager");
-                mgr.download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel).await
+                mgr.download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel)
+                    .await
             } else {
                 let downloader = bt::BtDownloader::new();
                 info!(protocol = downloader.protocol_name(), url = %url, "starting P2P download (standalone)");
-                downloader.download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel).await
+                downloader
+                    .download(url, save_dir, timeout_secs, dry_run, progress_tx, cancel)
+                    .await
             }
         }
         // 未来电驴协议：ProtocolType::Ed2k => ...
-        _ => {
-            Err(CoreError::InvalidParam(format!(
-                "unsupported P2P protocol: {:?}",
-                protocol
-            )))
-        }
+        _ => Err(CoreError::InvalidParam(format!(
+            "unsupported P2P protocol: {:?}",
+            protocol
+        ))),
     }
 }

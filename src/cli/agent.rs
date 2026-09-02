@@ -120,7 +120,8 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
     // 初始化 tracing 日志（支持 RUST_LOG 环境变量）
     match tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init() {
+        .try_init()
+    {
         Ok(_) => eprintln!("[tracing] initialized successfully"),
         Err(e) => eprintln!("[tracing] init failed: {}", e),
     }

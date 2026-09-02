@@ -32,11 +32,15 @@ use super::P2PDownloader;
 pub struct BtDownloader;
 
 impl BtDownloader {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for BtDownloader {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ============================================================
@@ -56,12 +60,7 @@ impl TorrentStorage for NullStorage {
         Ok(())
     }
 
-    fn pread_exact(
-        &self,
-        _file_id: usize,
-        _offset: u64,
-        buf: &mut [u8],
-    ) -> anyhow::Result<()> {
+    fn pread_exact(&self, _file_id: usize, _offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
         // 返回零填充，peer 会丢弃但不影响下载流程
         for b in buf.iter_mut() {
             *b = 0;
@@ -69,12 +68,7 @@ impl TorrentStorage for NullStorage {
         Ok(())
     }
 
-    fn pwrite_all(
-        &self,
-        _file_id: usize,
-        _offset: u64,
-        _buf: &[u8],
-    ) -> anyhow::Result<()> {
+    fn pwrite_all(&self, _file_id: usize, _offset: u64, _buf: &[u8]) -> anyhow::Result<()> {
         // 直接丢弃，不落盘
         Ok(())
     }
@@ -131,7 +125,9 @@ impl StorageFactory for NullStorageFactory {
 
 #[async_trait]
 impl P2PDownloader for BtDownloader {
-    fn protocol_name(&self) -> &'static str { "bittorrent" }
+    fn protocol_name(&self) -> &'static str {
+        "bittorrent"
+    }
 
     async fn download(
         &self,
@@ -146,33 +142,53 @@ impl P2PDownloader for BtDownloader {
 
         // dry_run 用 NullStorage 不落盘；非 dry_run 确保 save_dir 存在
         if !dry_run {
-            tokio::fs::create_dir_all(save_dir).await
+            tokio::fs::create_dir_all(save_dir)
+                .await
                 .map_err(|e| CoreError::Internal(format!("create save dir: {}", e)))?;
         }
 
-        eprintln!("[bt] starting download (standalone mode), dry_run={}, save_dir={:?}", dry_run, save_dir);
+        eprintln!(
+            "[bt] starting download (standalone mode), dry_run={}, save_dir={:?}",
+            dry_run, save_dir
+        );
 
         // 独立模式：自己创建 Session（非 BtManager 模式）
         let api = self.create_session_api(save_dir, dry_run).await?;
         let trackers = Self::default_trackers();
 
-        let result = self.download_internal(
-            &api, trackers, url, save_dir, timeout_secs, dry_run, progress_tx, cancel.clone(),
-        ).await;
+        let result = self
+            .download_internal(
+                &api,
+                trackers,
+                url,
+                save_dir,
+                timeout_secs,
+                dry_run,
+                progress_tx,
+                cancel.clone(),
+            )
+            .await;
 
         let elapsed_secs = start.elapsed().as_secs_f64();
         match result {
             Ok(r) => {
-                eprintln!("[bt] download completed: success={}, downloaded={}, elapsed={:.1}s",
-                    r.success, r.downloaded_bytes, elapsed_secs);
+                eprintln!(
+                    "[bt] download completed: success={}, downloaded={}, elapsed={:.1}s",
+                    r.success, r.downloaded_bytes, elapsed_secs
+                );
                 Ok(r)
             }
             Err(e) => {
                 let err_msg = e.to_string();
                 eprintln!("[bt] download failed: {}", err_msg);
                 Ok(DownloadResult {
-                    success: false, total_bytes: 0, downloaded_bytes: 0, elapsed_secs,
-                    success_chunks: 0, failed_chunks: 1, avg_speed_bps: 0,
+                    success: false,
+                    total_bytes: 0,
+                    downloaded_bytes: 0,
+                    elapsed_secs,
+                    success_chunks: 0,
+                    failed_chunks: 1,
+                    avg_speed_bps: 0,
                     error_msg: Some(err_msg),
                 })
             }
@@ -197,29 +213,50 @@ impl BtDownloader {
         let start = Instant::now();
 
         if !dry_run {
-            tokio::fs::create_dir_all(save_dir).await
+            tokio::fs::create_dir_all(save_dir)
+                .await
                 .map_err(|e| CoreError::Internal(format!("create save dir: {}", e)))?;
         }
 
-        eprintln!("[bt] starting download (BtManager mode, trackers={}), dry_run={}", trackers.len(), dry_run);
+        eprintln!(
+            "[bt] starting download (BtManager mode, trackers={}), dry_run={}",
+            trackers.len(),
+            dry_run
+        );
 
-        let result = self.download_internal(
-            api, trackers, url, save_dir, timeout_secs, dry_run, progress_tx, cancel.clone(),
-        ).await;
+        let result = self
+            .download_internal(
+                api,
+                trackers,
+                url,
+                save_dir,
+                timeout_secs,
+                dry_run,
+                progress_tx,
+                cancel.clone(),
+            )
+            .await;
 
         let elapsed_secs = start.elapsed().as_secs_f64();
         match result {
             Ok(r) => {
-                eprintln!("[bt] download completed: success={}, downloaded={}, elapsed={:.1}s",
-                    r.success, r.downloaded_bytes, elapsed_secs);
+                eprintln!(
+                    "[bt] download completed: success={}, downloaded={}, elapsed={:.1}s",
+                    r.success, r.downloaded_bytes, elapsed_secs
+                );
                 Ok(r)
             }
             Err(e) => {
                 let err_msg = e.to_string();
                 eprintln!("[bt] download failed: {}", err_msg);
                 Ok(DownloadResult {
-                    success: false, total_bytes: 0, downloaded_bytes: 0, elapsed_secs,
-                    success_chunks: 0, failed_chunks: 1, avg_speed_bps: 0,
+                    success: false,
+                    total_bytes: 0,
+                    downloaded_bytes: 0,
+                    elapsed_secs,
+                    success_chunks: 0,
+                    failed_chunks: 1,
+                    avg_speed_bps: 0,
                     error_msg: Some(err_msg),
                 })
             }
@@ -227,7 +264,11 @@ impl BtDownloader {
     }
 
     /// 创建独立 Session 和 Api（非 BtManager 模式）
-    async fn create_session_api(&self, save_dir: &Path, dry_run: bool) -> Result<librqbit::api::Api> {
+    async fn create_session_api(
+        &self,
+        save_dir: &Path,
+        dry_run: bool,
+    ) -> Result<librqbit::api::Api> {
         eprintln!("[bt] step1: creating librqbit session, dry_run={}", dry_run);
         let mut session_opts = librqbit::SessionOptions::default();
         if let Some(ref mut dht) = session_opts.dht {
@@ -271,7 +312,11 @@ impl BtDownloader {
         cancel: CancellationToken,
     ) -> Result<DownloadResult> {
         // 步骤 2：添加 torrent（使用传入的 trackers）
-        eprintln!("[bt] step2: adding torrent: {}, trackers={}", url, trackers.len());
+        eprintln!(
+            "[bt] step2: adding torrent: {}, trackers={}",
+            url,
+            trackers.len()
+        );
         let add_opts = librqbit::AddTorrentOptions {
             overwrite: true,
             peer_limit: Some(10000),
@@ -281,19 +326,31 @@ impl BtDownloader {
         };
 
         let add_result = if url.starts_with("magnet:") {
-            api.api_add_torrent(librqbit::AddTorrent::Url(url.to_string().into()), Some(add_opts))
+            api.api_add_torrent(
+                librqbit::AddTorrent::Url(url.to_string().into()),
+                Some(add_opts),
+            )
         } else if url.ends_with(".torrent") {
-            let data = tokio::fs::read(url).await
+            let data = tokio::fs::read(url)
+                .await
                 .map_err(|e| CoreError::Internal(format!("read torrent: {}", e)))?;
             eprintln!("[bt] step2: torrent file read, {} bytes", data.len());
-            api.api_add_torrent(librqbit::AddTorrent::TorrentFileBytes(data.into()), Some(add_opts))
+            api.api_add_torrent(
+                librqbit::AddTorrent::TorrentFileBytes(data.into()),
+                Some(add_opts),
+            )
         } else {
-            return Err(CoreError::InvalidParam(format!("unsupported BT URI: {}", url)));
+            return Err(CoreError::InvalidParam(format!(
+                "unsupported BT URI: {}",
+                url
+            )));
         };
 
-        let add_response = add_result.await
+        let add_response = add_result
+            .await
             .map_err(|e| CoreError::Internal(format!("add torrent: {}", e)))?;
-        let torrent_id = add_response.id
+        let torrent_id = add_response
+            .id
             .ok_or_else(|| CoreError::Internal("torrent id is None".into()))?;
         eprintln!("[bt] step2: torrent added, id={}", torrent_id);
 
@@ -309,10 +366,19 @@ impl BtDownloader {
                 return Err(CoreError::Internal("timeout waiting metadata".into()));
             }
 
-            if let Ok(details) = api.api_torrent_details(librqbit::api::TorrentIdOrHash::Id(torrent_id)) {
-                eprintln!("[bt] step3: poll, total_pieces={}, has_stats={}", details.total_pieces, details.stats.is_some());
+            if let Ok(details) =
+                api.api_torrent_details(librqbit::api::TorrentIdOrHash::Id(torrent_id))
+            {
+                eprintln!(
+                    "[bt] step3: poll, total_pieces={}, has_stats={}",
+                    details.total_pieces,
+                    details.stats.is_some()
+                );
                 if let Some(ref stats) = details.stats {
-                    eprintln!("[bt] step3: stats total={}, progress={}, state={:?}", stats.total_bytes, stats.progress_bytes, stats.state);
+                    eprintln!(
+                        "[bt] step3: stats total={}, progress={}, state={:?}",
+                        stats.total_bytes, stats.progress_bytes, stats.state
+                    );
                     if stats.total_bytes > 0 {
                         break stats.total_bytes;
                     }
@@ -320,7 +386,9 @@ impl BtDownloader {
                 if details.total_pieces > 0 {
                     if let Some(ref files) = details.files {
                         let total: u64 = files.iter().map(|f| f.length).sum();
-                        if total > 0 { break total; }
+                        if total > 0 {
+                            break total;
+                        }
                     }
                 }
             } else {
@@ -365,17 +433,23 @@ impl BtDownloader {
                 let delta = downloaded_bytes.saturating_sub(last_downloaded);
                 let speed_bps = if elapsed > 0.5 {
                     (delta as f64 / elapsed) as u64
-                } else { 0 };
+                } else {
+                    0
+                };
 
                 let percent = if total_bytes > 0 {
                     downloaded_bytes as f64 / total_bytes as f64 * 100.0
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 eprintln!("[bt] step4: progress={:.1}% ({}/{} bytes), speed={} B/s, finished={}, state={:?}",
                     percent, downloaded_bytes, total_bytes, speed_bps, stats.finished, stats.state);
 
                 let progress = DownloadProgress {
-                    downloaded_bytes, total_bytes, speed_bps,
+                    downloaded_bytes,
+                    total_bytes,
+                    speed_bps,
                     active_connections: 0,
                     percent,
                     elapsed_secs: download_start.elapsed().as_secs_f64(),
@@ -394,22 +468,36 @@ impl BtDownloader {
                     break;
                 }
             } else {
-                eprintln!("[bt] step4: api_stats_v1 returned Err (torrent may still be initializing)");
+                eprintln!(
+                    "[bt] step4: api_stats_v1 returned Err (torrent may still be initializing)"
+                );
             }
 
             // 诊断：peer 连接状态和 DHT（每 5 秒）
             if last_diag.elapsed() > Duration::from_secs(5) {
                 last_diag = Instant::now();
-                match api.api_peer_stats(
-                    TorrentIdOrHash::Id(torrent_id),
-                    PeerStatsFilter::default(),
-                ) {
+                match api
+                    .api_peer_stats(TorrentIdOrHash::Id(torrent_id), PeerStatsFilter::default())
+                {
                     Ok(peer_stats) => {
                         let total = peer_stats.peers.len();
-                        let live = peer_stats.peers.values().filter(|p| p.state == "live").count();
-                        let fetched: u64 = peer_stats.peers.values().map(|p| p.counters.fetched_bytes).sum();
-                        let errors: u32 = peer_stats.peers.values().map(|p| p.counters.errors).sum();
-                        let conn_attempts: u32 = peer_stats.peers.values().map(|p| p.counters.connection_attempts).sum();
+                        let live = peer_stats
+                            .peers
+                            .values()
+                            .filter(|p| p.state == "live")
+                            .count();
+                        let fetched: u64 = peer_stats
+                            .peers
+                            .values()
+                            .map(|p| p.counters.fetched_bytes)
+                            .sum();
+                        let errors: u32 =
+                            peer_stats.peers.values().map(|p| p.counters.errors).sum();
+                        let conn_attempts: u32 = peer_stats
+                            .peers
+                            .values()
+                            .map(|p| p.counters.connection_attempts)
+                            .sum();
                         eprintln!("[bt] diag: peers={}, live={}, fetched={}B, errors={}, conn_attempts={}",
                             total, live, fetched, errors, conn_attempts);
                         for (i, (id, stats)) in peer_stats.peers.iter().take(5).enumerate() {
@@ -433,17 +521,28 @@ impl BtDownloader {
         let success = final_finished || (total_bytes > 0 && downloaded_bytes >= total_bytes);
         let avg_speed_bps = if elapsed_secs > 0.0 {
             (downloaded_bytes as f64 / elapsed_secs) as u64
-        } else { 0 };
+        } else {
+            0
+        };
 
-        eprintln!("[bt] final: success={}, downloaded={}/{}, elapsed={:.1}s, avg_speed={} B/s",
-            success, downloaded_bytes, total_bytes, elapsed_secs, avg_speed_bps);
+        eprintln!(
+            "[bt] final: success={}, downloaded={}/{}, elapsed={:.1}s, avg_speed={} B/s",
+            success, downloaded_bytes, total_bytes, elapsed_secs, avg_speed_bps
+        );
 
         Ok(DownloadResult {
-            success, total_bytes, downloaded_bytes, elapsed_secs,
+            success,
+            total_bytes,
+            downloaded_bytes,
+            elapsed_secs,
             success_chunks: if success { 1 } else { 0 },
             failed_chunks: if success { 0 } else { 1 },
             avg_speed_bps,
-            error_msg: if success { None } else { Some("incomplete".into()) },
+            error_msg: if success {
+                None
+            } else {
+                Some("incomplete".into())
+            },
         })
     }
 }

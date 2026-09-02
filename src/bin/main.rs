@@ -8,9 +8,13 @@ use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Semaphore};
 
+use pandanetos::domain::CancellationToken;
 use pandanetos::domain::{ChunkDownloader, DownloadProgress, DownloadSource};
 use spde::cli::config::{load_config, resolve_task_params, SpdeConfig};
+use spde::cli::new_download::{create_fetcher, detect_protocol, ProtocolType};
+use spde::cli::p2p;
 use spde::cli::paths::SpdePaths;
+use spde::infra::disk::writer_factory::{create_writer, WriterType};
 use spde::infra::file::downloader::FileChunkDownloader;
 use spde::infra::file::source::FileSource;
 #[cfg(feature = "ftp")]
@@ -25,11 +29,7 @@ use spde::infra::ssh::source::SshSource;
 use spde::infra::torrent::downloader::TorrentChunkDownloader;
 #[cfg(feature = "torrent")]
 use spde::infra::torrent::source::TorrentSource;
-use spde::cli::new_download::{create_fetcher, detect_protocol, ProtocolType};
-use spde::cli::p2p;
-use spde::infra::disk::writer_factory::{create_writer, WriterType};
 use spde::service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig};
-use pandanetos::domain::CancellationToken;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -266,14 +266,15 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             }
 
             // 步骤 2：创建对应的 ChunkFetcher
-            let fetcher = match create_fetcher(&url, protocol, timeout_secs, dry_run, &task_save_dir).await {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("[error] {}: create fetcher failed: {:#}", name, e);
-                    drop(permit);
-                    return (name, url, filename, Err(e.to_string()));
-                }
-            };
+            let fetcher =
+                match create_fetcher(&url, protocol, timeout_secs, dry_run, &task_save_dir).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("[error] {}: create fetcher failed: {:#}", name, e);
+                        drop(permit);
+                        return (name, url, filename, Err(e.to_string()));
+                    }
+                };
 
             // 步骤 3：probe 获取文件大小
             let file_size = match fetcher.probe().await {
@@ -289,7 +290,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
             // 步骤 4：创建写入器
             let save_path = task_save_dir.join(&filename);
-            let writer_type = if dry_run { WriterType::Null } else { WriterType::Disk };
+            let writer_type = if dry_run {
+                WriterType::Null
+            } else {
+                WriterType::Disk
+            };
             let writer = match create_writer(writer_type, Some(save_path.clone()), file_size) {
                 Ok(w) => w,
                 Err(e) => {
@@ -462,7 +467,11 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     let elapsed = overall_start.elapsed().as_secs_f64();
     let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
-    let avg_speed = if elapsed > 0.0 { total_mb / elapsed } else { 0.0 };
+    let avg_speed = if elapsed > 0.0 {
+        total_mb / elapsed
+    } else {
+        0.0
+    };
 
     eprintln!();
     eprintln!("========== 下载汇总 (NEW architecture) ==========");

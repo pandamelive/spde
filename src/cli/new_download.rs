@@ -187,7 +187,8 @@ pub async fn execute_download(
     active.fetch_add(1, Ordering::Relaxed);
 
     // 通知 PK 任务开始
-    ws.send_task_started(dispatch_id).await; eprintln!("[download] task report sent");
+    ws.send_task_started(dispatch_id).await;
+    eprintln!("[download] task report sent");
 
     // 创建保存目录（dry_run 模式下不创建目录，实现真正的不落盘）
     if !params.dry_run {
@@ -254,7 +255,11 @@ pub async fn execute_download(
         };
 
         bytes_total.fetch_add(downloaded, Ordering::Relaxed);
-        let avg_speed_mbps = if elapsed > 0.0 { downloaded as f64 / elapsed / 1024.0 / 1024.0 } else { 0.0 };
+        let avg_speed_mbps = if elapsed > 0.0 {
+            downloaded as f64 / elapsed / 1024.0 / 1024.0
+        } else {
+            0.0
+        };
         let status = if success { "success" } else { "failed" };
 
         ws.send_task_report(TaskReportParams {
@@ -317,7 +322,8 @@ pub async fn execute_download(
     let scheduler = ChunkScheduler::new(scheduler_config);
 
     // 步骤 4：添加源到调度器
-    scheduler.add_source(fetcher.clone()).await; eprintln!("[download] task report sent");
+    scheduler.add_source(fetcher.clone()).await;
+    eprintln!("[download] task report sent");
 
     // 步骤 5：创建写入器
     let writer_type = if params.dry_run {
@@ -357,16 +363,24 @@ pub async fn execute_download(
                     active_connections: progress.active_connections,
                     elapsed_secs,
                 })
-                .await; eprintln!("[download] task report sent");
+                .await;
+            eprintln!("[download] task report sent");
         }
     });
 
     // 步骤 8：执行下载
     info!(url = %url, "starting download with new architecture");
-    eprintln!("[download] scheduler.execute returned"); let result = scheduler.execute(writer, progress_tx, cancel).await; eprintln!("[download] task report sent"); eprintln!("[download] result: {:?}", result.as_ref().map(|r| (r.success, r.total_bytes)));
+    eprintln!("[download] scheduler.execute returned");
+    let result = scheduler.execute(writer, progress_tx, cancel).await;
+    eprintln!("[download] task report sent");
+    eprintln!(
+        "[download] result: {:?}",
+        result.as_ref().map(|r| (r.success, r.total_bytes))
+    );
 
     // 等待进度转发完成
-    let _ = progress_handle.await; eprintln!("[download] task report sent");
+    let _ = progress_handle.await;
+    eprintln!("[download] task report sent");
 
     let elapsed = started.elapsed().as_secs_f64();
 
@@ -413,7 +427,8 @@ pub async fn execute_download(
         failed_chunks: if success { 0 } else { 1 },
         error_msg: error_msg.as_deref(),
     })
-    .await; eprintln!("[download] task report sent");
+    .await;
+    eprintln!("[download] task report sent");
 
     active.fetch_sub(1, Ordering::Relaxed);
 

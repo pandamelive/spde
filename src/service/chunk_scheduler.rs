@@ -126,7 +126,8 @@ impl ChunkScheduler {
 
         let source_count = self.source_pool.len().await;
 
-        info!(source_count = source_count, "starting chunk scheduler"); eprintln!("[scheduler] starting, source_count={}", source_count);
+        info!(source_count = source_count, "starting chunk scheduler");
+        eprintln!("[scheduler] starting, source_count={}", source_count);
 
         let (file_size, capabilities) = self.probe_all_sources().await?;
 
@@ -160,7 +161,16 @@ impl ChunkScheduler {
         };
 
         let total_chunks = chunk_tasks.len() as u32;
-        info!(total_chunks = total_chunks, "chunk tasks created"); eprintln!("[scheduler] chunk tasks created, total_chunks={}, concurrency={}", total_chunks, if capabilities.supports_multi_connection { "multi" } else { "single" });
+        info!(total_chunks = total_chunks, "chunk tasks created");
+        eprintln!(
+            "[scheduler] chunk tasks created, total_chunks={}, concurrency={}",
+            total_chunks,
+            if capabilities.supports_multi_connection {
+                "multi"
+            } else {
+                "single"
+            }
+        );
 
         let progress_handle = self.spawn_progress_reporter(
             file_size,
@@ -195,11 +205,15 @@ impl ChunkScheduler {
             worker_handles.push(handle);
         }
 
-        eprintln!("[scheduler] waiting for {} workers", worker_handles.len()); for handle in worker_handles {
-            eprintln!("[scheduler] worker completed"); let _ = handle.await;
+        eprintln!("[scheduler] waiting for {} workers", worker_handles.len());
+        for handle in worker_handles {
+            eprintln!("[scheduler] worker completed");
+            let _ = handle.await;
         }
 
-        eprintln!("[scheduler] all workers done, dropping progress_handle"); drop(progress_handle); eprintln!("[scheduler] progress_handle dropped");
+        eprintln!("[scheduler] all workers done, dropping progress_handle");
+        drop(progress_handle);
+        eprintln!("[scheduler] progress_handle dropped");
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let total_bytes = self
@@ -241,7 +255,11 @@ impl ChunkScheduler {
             "download completed"
         );
 
-        eprintln!("[scheduler] execute returning, success={}, bytes={}", result.success, result.total_bytes); Ok(result)
+        eprintln!(
+            "[scheduler] execute returning, success={}, bytes={}",
+            result.success, result.total_bytes
+        );
+        Ok(result)
     }
 
     async fn probe_all_sources(&self) -> Result<(u64, SourceCapabilities)> {
@@ -280,7 +298,8 @@ impl ChunkScheduler {
                         capabilities.protocol = caps.protocol;
                     }
                 }
-                Err(e) => { eprintln!("[probe] source probe failed: {}", e);
+                Err(e) => {
+                    eprintln!("[probe] source probe failed: {}", e);
                     last_error = e.to_string();
                     warn!(
                         source = %source.display_name,
@@ -361,7 +380,8 @@ impl ChunkScheduler {
         let initial_retry_interval = self.config.initial_retry_interval_ms;
 
         tokio::spawn(async move {
-            active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed); eprintln!("[worker {}] started", worker_id);
+            active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[worker {}] started", worker_id);
 
             loop {
                 if cancel.is_cancelled() {
@@ -375,8 +395,15 @@ impl ChunkScheduler {
                 };
 
                 let task = match task {
-                    Some(t) => { eprintln!("[worker {}] got chunk_id={}, offset={}, length={}", worker_id, t.chunk_id, t.offset, t.length); t },
-                    None => { eprintln!("[worker {}] no more chunks, exiting", worker_id);
+                    Some(t) => {
+                        eprintln!(
+                            "[worker {}] got chunk_id={}, offset={}, length={}",
+                            worker_id, t.chunk_id, t.offset, t.length
+                        );
+                        t
+                    }
+                    None => {
+                        eprintln!("[worker {}] no more chunks, exiting", worker_id);
                         debug!(worker_id = worker_id, "no more chunks, worker exiting");
                         break;
                     }
@@ -389,7 +416,8 @@ impl ChunkScheduler {
 
                 let fetcher = match source_pool.best_source().await {
                     Some(f) => f,
-                    None => { eprintln!("[worker {}] no more chunks, exiting", worker_id);
+                    None => {
+                        eprintln!("[worker {}] no more chunks, exiting", worker_id);
                         warn!(worker_id = worker_id, "no source available, retrying chunk");
                         let mut queue = chunk_queue.lock().await;
                         queue.push(task);
@@ -399,15 +427,22 @@ impl ChunkScheduler {
                     }
                 };
 
-                eprintln!("[worker {}] calling fetch_chunk", worker_id); let result = {
-                    eprintln!("[worker {}] acquiring writer lock", worker_id); let mut writer_guard = writer.lock().await; eprintln!("[worker {}] writer lock acquired", worker_id);
+                eprintln!("[worker {}] calling fetch_chunk", worker_id);
+                let result = {
+                    eprintln!("[worker {}] acquiring writer lock", worker_id);
+                    let mut writer_guard = writer.lock().await;
+                    eprintln!("[worker {}] writer lock acquired", worker_id);
                     fetcher
                         .fetch_chunk(task.offset, task.length, &mut *writer_guard)
                         .await
                 };
 
                 match result {
-                    Ok(stats) => { eprintln!("[worker {}] fetch_chunk success, bytes={}", worker_id, stats.bytes_downloaded);
+                    Ok(stats) => {
+                        eprintln!(
+                            "[worker {}] fetch_chunk success, bytes={}",
+                            worker_id, stats.bytes_downloaded
+                        );
                         debug!(
                             worker_id = worker_id,
                             chunk_id = task.chunk_id,
@@ -431,7 +466,8 @@ impl ChunkScheduler {
                             )
                             .await;
                     }
-                    Err(e) => { eprintln!("[probe] source probe failed: {}", e);
+                    Err(e) => {
+                        eprintln!("[probe] source probe failed: {}", e);
                         warn!(
                             worker_id = worker_id,
                             chunk_id = task.chunk_id,

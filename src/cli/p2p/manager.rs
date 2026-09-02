@@ -37,7 +37,10 @@ impl BtManager {
     /// 创建 librqbit Session，启动 DHT/LSD，初始化 tracker 列表，
     /// 并启动后台任务定期从远程获取最新 tracker 列表。
     pub async fn new(output_dir: &Path) -> Result<Arc<Self>> {
-        eprintln!("[bt-manager] initializing global session, output_dir={:?}", output_dir);
+        eprintln!(
+            "[bt-manager] initializing global session, output_dir={:?}",
+            output_dir
+        );
 
         // 创建全局 Session（DHT/LSD 自动启动）
         let session_opts = SessionOptions::default();
@@ -85,21 +88,32 @@ impl BtManager {
                 if !trackers.is_empty() {
                     let count = trackers.len();
                     self.update_trackers(trackers);
-                    eprintln!("[bt-manager] trackers refreshed from remote, count={}", count);
+                    eprintln!(
+                        "[bt-manager] trackers refreshed from remote, count={}",
+                        count
+                    );
                 } else {
                     eprintln!("[bt-manager] remote tracker list is empty, keeping current");
                 }
             }
             Err(e) => {
-                eprintln!("[bt-manager] fetch remote trackers failed: {}, keeping current", e);
+                eprintln!(
+                    "[bt-manager] fetch remote trackers failed: {}, keeping current",
+                    e
+                );
             }
         }
     }
 
     /// 从远程 URL 获取 tracker 列表
     async fn fetch_remote_trackers(&self) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(15)).build().map_err(|e| CoreError::Internal(format!("build client: {}", e)))?;
-        let response = client.get(TRACKER_LIST_URL)
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| CoreError::Internal(format!("build client: {}", e)))?;
+        let response = client
+            .get(TRACKER_LIST_URL)
             .send()
             .await
             .map_err(|e| CoreError::Internal(format!("http get: {}", e)))?;

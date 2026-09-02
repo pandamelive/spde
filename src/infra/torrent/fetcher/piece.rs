@@ -144,7 +144,9 @@ impl TorrentPieceFetcher {
 
         // 创建 librqbit Session（完全禁用 DHT，避免 Windows 环境下 UDP 绑定卡住；磁力链接通过 tracker 发现 peer）
         let mut session_opts = librqbit::SessionOptions::default();
-        if let Some(ref mut dht) = session_opts.dht { dht.persistence = None; }
+        if let Some(ref mut dht) = session_opts.dht {
+            dht.persistence = None;
+        }
         eprintln!("[bt] DHT enabled with persistence disabled");
         let session = librqbit::Session::new_with_opts(state.save_dir.clone(), session_opts)
             .await
@@ -158,14 +160,26 @@ impl TorrentPieceFetcher {
         // 添加 torrent
         eprintln!("[bt] adding torrent...");
         let add_result = if self.uri.starts_with("magnet:") {
-            api.api_add_torrent(librqbit::AddTorrent::Url(self.uri.clone().into()), Some(librqbit::AddTorrentOptions { overwrite: true, ..Default::default() }))
-                .await
+            api.api_add_torrent(
+                librqbit::AddTorrent::Url(self.uri.clone().into()),
+                Some(librqbit::AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
         } else if self.uri.ends_with(".torrent") {
             let data = tokio::fs::read(&self.uri)
                 .await
                 .map_err(|e| CoreError::IO(format!("failed to read torrent file: {}", e)))?;
-            api.api_add_torrent(librqbit::AddTorrent::TorrentFileBytes(data.into()), Some(librqbit::AddTorrentOptions { overwrite: true, ..Default::default() }))
-                .await
+            api.api_add_torrent(
+                librqbit::AddTorrent::TorrentFileBytes(data.into()),
+                Some(librqbit::AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
         } else {
             return Err(CoreError::InvalidParam(format!(
                 "unsupported torrent URI: {}",
@@ -182,14 +196,20 @@ impl TorrentPieceFetcher {
         info!(torrent_id = torrent_id, "torrent added successfully");
 
         // 等待 metadata 下载完成
-        eprintln!("[bt] waiting for metadata... (timeout={}s)", self.timeout_secs);
+        eprintln!(
+            "[bt] waiting for metadata... (timeout={}s)",
+            self.timeout_secs
+        );
         let metadata_timeout = Duration::from_secs(self.timeout_secs);
         let start = Instant::now();
 
         loop {
-                if start.elapsed().as_secs() % 10 == 0 {
-                    eprintln!("[bt] waiting for metadata... elapsed={:.0}s", start.elapsed().as_secs_f64());
-                }
+            if start.elapsed().as_secs() % 10 == 0 {
+                eprintln!(
+                    "[bt] waiting for metadata... elapsed={:.0}s",
+                    start.elapsed().as_secs_f64()
+                );
+            }
             if start.elapsed() > metadata_timeout {
                 return Err(CoreError::Timeout(
                     "timeout waiting for torrent metadata".into(),
@@ -271,7 +291,11 @@ impl TorrentPieceFetcher {
         let is_last_piece = total_pieces > 0 && piece_index == total_pieces - 1;
         let piece_size = if is_last_piece && file_size > 0 {
             let base = piece_index as u64 * piece_size_state;
-            if file_size > base { file_size - base } else { piece_size_state }
+            if file_size > base {
+                file_size - base
+            } else {
+                piece_size_state
+            }
         } else {
             piece_size_state
         };
@@ -285,7 +309,12 @@ impl TorrentPieceFetcher {
 
         // 使用流式 API 下载文件
         let file_id = 0;
-        eprintln!("[bt] fetch_chunk: piece_index={}, piece_size={}, skip_bytes={}", piece_index, piece_size, piece_index as u64 * piece_size);
+        eprintln!(
+            "[bt] fetch_chunk: piece_index={}, piece_size={}, skip_bytes={}",
+            piece_index,
+            piece_size,
+            piece_index as u64 * piece_size
+        );
         let mut stream = api
             .api_stream(torrent_id.into(), file_id)
             .await
@@ -348,7 +377,10 @@ impl TorrentPieceFetcher {
             "BT piece download completed"
         );
 
-        eprintln!("[bt] fetch_chunk: completed, downloaded={} bytes", downloaded);
+        eprintln!(
+            "[bt] fetch_chunk: completed, downloaded={} bytes",
+            downloaded
+        );
         Ok(downloaded)
     }
 

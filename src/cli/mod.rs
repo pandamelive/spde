@@ -1,4 +1,4 @@
-﻿//! SPDE CLI 子命令实现
+//! SPDE CLI 子命令实现
 
 macro_rules! log {
     ($($arg:tt)*) => {{
@@ -14,6 +14,6 @@ pub mod discover;
 pub mod history;
 pub mod manifest;
 pub mod new_download;
-pub mod paths;
 pub mod p2p;
+pub mod paths;
 pub mod ws_client;
