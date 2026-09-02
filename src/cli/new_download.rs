@@ -1,4 +1,4 @@
-//! 新下载执行模块（基于统一数据块抽象的智能下载架构）
+﻿//! 新下载执行模块（基于统一数据块抽象的智能下载架构）
 //!
 //! 使用新的四层架构：domain ← service ← infra ← cli
 //! 核心特性：
@@ -48,8 +48,8 @@ fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
 }
 
 /// 协议识别结果
-#[derive(Debug)]
-enum ProtocolType {
+#[derive(Debug, Clone, Copy)]
+pub enum ProtocolType {
     Http,
     Https,
     Ftp,
@@ -64,7 +64,7 @@ enum ProtocolType {
 }
 
 /// 识别 URL 协议类型
-fn detect_protocol(url: &str) -> ProtocolType {
+pub fn detect_protocol(url: &str) -> ProtocolType {
     if url.starts_with("magnet:") {
         ProtocolType::Magnet
     } else if url.starts_with("https://") {
@@ -95,7 +95,7 @@ fn detect_protocol(url: &str) -> ProtocolType {
 /// # 注意
 /// 对于 HTTP 协议，会先 probe 探测是否支持 Range，
 /// 然后选择 HttpRangeFetcher 或 HttpStreamFetcher。
-async fn create_fetcher(
+pub async fn create_fetcher(
     url: &str,
     protocol: ProtocolType,
     timeout_secs: u64,
@@ -185,7 +185,7 @@ pub async fn execute_download(
     active.fetch_add(1, Ordering::Relaxed);
 
     // 通知 PK 任务开始
-    ws.send_task_started(dispatch_id).await;
+    ws.send_task_started(dispatch_id).await; eprintln!("[download] task report sent");
 
     // 创建保存目录（dry_run 模式下不创建目录，实现真正的不落盘）
     if !params.dry_run {
@@ -222,7 +222,7 @@ pub async fn execute_download(
     let scheduler = ChunkScheduler::new(scheduler_config);
 
     // 步骤 4：添加源到调度器
-    scheduler.add_source(fetcher.clone()).await;
+    scheduler.add_source(fetcher.clone()).await; eprintln!("[download] task report sent");
 
     // 步骤 5：创建写入器
     let writer_type = if params.dry_run {
@@ -262,16 +262,16 @@ pub async fn execute_download(
                     active_connections: progress.active_connections,
                     elapsed_secs,
                 })
-                .await;
+                .await; eprintln!("[download] task report sent");
         }
     });
 
     // 步骤 8：执行下载
     info!(url = %url, "starting download with new architecture");
-    let result = scheduler.execute(writer, progress_tx, cancel).await;
+    eprintln!("[download] scheduler.execute returned"); let result = scheduler.execute(writer, progress_tx, cancel).await; eprintln!("[download] task report sent"); eprintln!("[download] result: {:?}", result.as_ref().map(|r| (r.success, r.total_bytes)));
 
     // 等待进度转发完成
-    let _ = progress_handle.await;
+    let _ = progress_handle.await; eprintln!("[download] task report sent");
 
     let elapsed = started.elapsed().as_secs_f64();
 
@@ -318,7 +318,7 @@ pub async fn execute_download(
         failed_chunks: if success { 0 } else { 1 },
         error_msg: error_msg.as_deref(),
     })
-    .await;
+    .await; eprintln!("[download] task report sent");
 
     active.fetch_sub(1, Ordering::Relaxed);
 

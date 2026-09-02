@@ -117,6 +117,15 @@ async fn register_to_pk(
 }
 
 pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String) -> Result<()> {
+    // 初始化 tracing 日志（支持 RUST_LOG 环境变量）
+    match tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init() {
+        Ok(_) => eprintln!("[tracing] initialized successfully"),
+        Err(e) => eprintln!("[tracing] init failed: {}", e),
+    }
+    eprintln!("[tracing] RUST_LOG={:?}", std::env::var("RUST_LOG"));
+
     // 1. 加载本地 config
     let local_cfg = crate::cli::config::load_config(&paths.config_file)
         .map_err(|e| anyhow::anyhow!("load local config: {e}"))?;

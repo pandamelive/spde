@@ -27,7 +27,10 @@ use spde::infra::ssh::source::SshSource;
 use spde::infra::torrent::downloader::TorrentChunkDownloader;
 #[cfg(feature = "torrent")]
 use spde::infra::torrent::source::TorrentSource;
-use spde::service::scheduler::DownloadScheduler;
+use spde::cli::new_download::{create_fetcher, detect_protocol};
+use spde::infra::disk::writer_factory::{create_writer, WriterType};
+use spde::service::chunk_scheduler::{ChunkScheduler, ChunkSchedulerConfig};
+use pandanetos::domain::CancellationToken;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -115,7 +118,7 @@ fn create_source_and_downloader(
 }
 
 async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
-    eprintln!("serve starting ...");
+    eprintln!("serve starting ... (NEW architecture)");
     eprintln!("base_dir: {:?}", paths.base_dir);
 
     let cfg: SpdeConfig = load_config(&paths.config_file)
@@ -131,25 +134,6 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
         eprintln!("no enabled tasks, exit");
         return Ok(());
     }
-
-    // 统一调度器：所有协议（HTTP/FTP/SFTP/BT/本地文件）自动路由
-    let scheduler_config = DownloadConfig {
-        max_connections: cfg.global.connections_per_file,
-        chunk_size: 4 * 1024 * 1024, // 4MB 默认分片大小
-        enable_mirror_discovery: true,
-        enable_adaptive: true,
-        save_dir: PathBuf::from(&cfg.output.save_path),
-        ..Default::default()
-    };
-    let max_conns = scheduler_config.max_connections;
-    let scheduler = Arc::new(DownloadScheduler::new(scheduler_config));
-
-    // 注册镜像发现器（HTTP 专用）
-    let mirror_bus = scheduler.mirror_bus();
-    mirror_bus
-        .register(Box::new(DnsMultiIpDiscoverer::new()))
-        .await;
-    eprintln!("scheduler initialized: max_connections={}", max_conns);
 
     // 输出目录：绝对路径直接用，相对路径基于 base_dir
     let save_dir = PathBuf::from(&cfg.output.save_path);
@@ -188,38 +172,81 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             .await
             .context("acquire semaphore failed")?;
 
-        // 任务级覆盖（config.yaml direct_tasks 内联字段），未覆盖项回退 global 段默认值
+        // 任务级覆盖
         let params = resolve_task_params(&task_cfg.overrides, &cfg, &paths.base_dir);
         let name = task_cfg.name.clone();
         let url = task_cfg.url.clone();
         let filename = task_cfg.filename.clone();
-        let file_path = params.save_dir.join(&task_cfg.filename);
-        let skip_tls_verify = params.skip_tls_verify;
         let timeout_secs = params.timeout.map(|d| d.as_secs()).unwrap_or(30);
+        let dry_run = params.dry_run;
+        let task_save_dir = params.save_dir.clone();
 
-        let scheduler = scheduler.clone();
         let handle = tokio::spawn(async move {
-            eprintln!("[start] {} -> {:?}", name, file_path);
+            eprintln!("[start] {} -> {}", name, url);
+            let started = Instant::now();
 
-            // 根据 URL 协议类型创建对应的 Source 和 Downloader
-            let (source, downloader) = match create_source_and_downloader(
-                &url,
-                &file_path,
-                skip_tls_verify,
-                timeout_secs,
-                params.dry_run,
-            ) {
-                Ok(sd) => sd,
+            // 步骤 1：协议识别
+            let protocol = detect_protocol(&url);
+            eprintln!("[protocol] {}: {:?}", name, protocol);
+
+            // 步骤 2：创建对应的 ChunkFetcher
+            let fetcher = match create_fetcher(&url, protocol, timeout_secs, dry_run, &task_save_dir).await {
+                Ok(f) => f,
                 Err(e) => {
-                    eprintln!("[error] {}: create source failed: {:#}", name, e);
-                    return (name, url, filename, Err(e));
+                    eprintln!("[error] {}: create fetcher failed: {:#}", name, e);
+                    drop(permit);
+                    return (name, url, filename, Err(e.to_string()));
                 }
             };
 
-            // 创建进度汇报通道
+            // 步骤 3：probe 获取文件大小
+            let file_size = match fetcher.probe().await {
+                Ok((size, _)) => {
+                    eprintln!("[probe] {}: file_size={} bytes", name, size);
+                    size
+                }
+                Err(e) => {
+                    eprintln!("[warn] {}: probe failed: {:#}, using 0", name, e);
+                    0
+                }
+            };
+
+            // 步骤 4：创建写入器
+            let save_path = task_save_dir.join(&filename);
+            let writer_type = if dry_run { WriterType::Null } else { WriterType::Disk };
+            let writer = match create_writer(writer_type, Some(save_path.clone()), file_size) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("[error] {}: create writer failed: {:#}", name, e);
+                    drop(permit);
+                    return (name, url, filename, Err(e.to_string()));
+                }
+            };
+
+            // 步骤 5：创建统一分片调度器
+            let scheduler_config = ChunkSchedulerConfig {
+                initial_chunk_size: 4 * 1024 * 1024,
+                min_chunk_size: 1 * 1024 * 1024,
+                max_chunk_size: 64 * 1024 * 1024,
+                max_retries: 3,
+                initial_retry_interval_ms: 1000,
+                progress_interval_ms: 500,
+                ..Default::default()
+            };
+            let scheduler = ChunkScheduler::new(scheduler_config);
+
+            // 步骤 6：添加源到调度器
+            scheduler.add_source(fetcher.clone()).await;
+
+            // 步骤 7：创建进度通道
             let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
+
+            // 步骤 8：创建取消令牌
+            let cancel = CancellationToken::new();
+
+            // 进度汇报任务：输出到控制台
             let progress_name = name.clone();
-            tokio::spawn(async move {
+            let progress_handle = tokio::spawn(async move {
                 while let Some(progress) = progress_rx.recv().await {
                     let percent = if progress.total_bytes > 0 {
                         progress.downloaded_bytes as f64 / progress.total_bytes as f64 * 100.0
@@ -238,36 +265,39 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                 }
             });
 
-            // 执行下载
-            let result = scheduler
-                .download(source, downloader, file_path.clone(), progress_tx)
-                .await;
+            // 步骤 9：执行下载
+            let result = scheduler.execute(writer, progress_tx, cancel).await;
+            drop(progress_handle);
             drop(permit);
 
+            let elapsed_secs = started.elapsed().as_secs_f64();
             match result {
                 Ok(r) => {
                     eprintln!(
-                        "[done] {}  downloaded={}MB",
+                        "[done] {}: success={}, downloaded={}MB, chunks={}/{}, elapsed={:.1}s",
                         name,
-                        r.downloaded_bytes / 1024 / 1024,
+                        r.success,
+                        r.total_bytes / 1024 / 1024,
+                        r.success_chunks,
+                        r.total_chunks,
+                        elapsed_secs
                     );
-                    // 转换为旧格式的输出（兼容后续统计和历史记录）
                     let output = json!({
-                        "total_size": r.total_bytes,
-                        "downloaded_bytes": r.downloaded_bytes,
-                        "elapsed_secs": r.elapsed_secs,
-                        "avg_speed_mbps": if r.elapsed_secs > 0.0 { r.downloaded_bytes as f64 / r.elapsed_secs / 1024.0 / 1024.0 } else { 0.0 },
+                        "total_size": file_size,
+                        "downloaded_bytes": r.total_bytes,
+                        "elapsed_secs": elapsed_secs,
+                        "avg_speed_mbps": if elapsed_secs > 0.0 { r.total_bytes as f64 / elapsed_secs / 1024.0 / 1024.0 } else { 0.0 },
                         "status": if r.success { "success" } else { "failed" },
                         "is_success": r.success,
-                        "success_chunks": 0,
-                        "failed_chunks": 0,
-                        "error_msg": null
+                        "success_chunks": r.success_chunks,
+                        "failed_chunks": r.failed_chunks,
+                        "error_msg": r.error
                     });
                     (name, url, filename, Ok(output))
                 }
                 Err(e) => {
                     eprintln!("[error] {}: {:#}", name, e);
-                    (name, url, filename, Err(e.into()))
+                    (name, url, filename, Err(e.to_string()))
                 }
             }
         });
@@ -327,7 +357,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
                         "status": "failed",
                         "success_chunks": 0,
                         "failed_chunks": 0,
-                        "error_msg": e.to_string()
+                        "error_msg": e
                     })
                 }
             };
@@ -356,14 +386,10 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
 
     let elapsed = overall_start.elapsed().as_secs_f64();
     let total_mb = total_bytes as f64 / 1024.0 / 1024.0;
-    let avg_speed = if elapsed > 0.0 {
-        total_mb / elapsed
-    } else {
-        0.0
-    };
+    let avg_speed = if elapsed > 0.0 { total_mb / elapsed } else { 0.0 };
 
     eprintln!();
-    eprintln!("========== 下载汇总 ==========");
+    eprintln!("========== 下载汇总 (NEW architecture) ==========");
     eprintln!(
         "总任务数: {} (成功: {} 失败: {})",
         enabled.len(),
@@ -384,7 +410,7 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
     );
     eprintln!("总耗时: {:.1}s", elapsed);
     eprintln!("平均速度: {:.1} MB/s", avg_speed);
-    eprintln!("==============================");
+    eprintln!("================================================");
 
     Ok(())
 }
