@@ -24,7 +24,9 @@ use pandanetos::error::{CoreError, Result};
 use crate::cli::new_download::ProtocolType;
 
 pub mod bt;
+pub mod discovery_backend;
 pub mod manager;
+pub mod service_resolver;
 
 /// P2P 下载器 trait（BT、电驴等协议实现此接口）
 #[async_trait]

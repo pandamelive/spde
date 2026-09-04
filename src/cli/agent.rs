@@ -104,6 +104,14 @@ async fn register_to_pk(
             capabilities: Some(crate::cli::manifest::build_node_capabilities()),
             max_concurrent: Some(local_max_concurrent),
             max_bandwidth_bps: None,
+            serve_host: Some("127.0.0.1".to_string()),
+            serve_port: Some(5566),
+            region: None,
+            capability_tags: vec![
+                "http_download".to_string(),
+                "bt_download".to_string(),
+                "resume".to_string(),
+            ],
         })
         .send()
         .await

@@ -45,6 +45,7 @@ reqwest = { version = "0.13.4", features = ["rustls", "stream", "system-proxy", 
 url = "2.5.8"
 percent-encoding = "2.3.2"
 async-trait = "0.1.92"
+dashmap = "5"
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 tokio-util = { version = "0.7", features = ["io"] }
