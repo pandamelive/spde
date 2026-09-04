@@ -322,6 +322,14 @@ impl BtDownloader {
             peer_limit: Some(10000),
             force_tracker_interval: Some(Duration::from_secs(30)),
             trackers: Some(trackers),
+            storage_factory: if dry_run {
+                eprintln!(
+                    "[bt] step2: dry_run=true, using NullStorage per-torrent (no disk writes)"
+                );
+                Some(NullStorageFactory.boxed())
+            } else {
+                None
+            },
             ..Default::default()
         };
 
