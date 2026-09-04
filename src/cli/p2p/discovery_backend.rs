@@ -13,7 +13,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 /// 发现的 peer 信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
