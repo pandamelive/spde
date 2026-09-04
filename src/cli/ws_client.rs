@@ -50,12 +50,17 @@ pub struct TaskProgressParams<'a> {
 #[derive(Clone)]
 pub struct WsClient {
     tx: mpsc::Sender<String>,
+    /// config 变更挂起标志（避免 Notify 无 waiter 时信号丢失）
+    config_flag: Arc<AtomicBool>,
     config_notify: Arc<Notify>,
+    /// new_task 挂起标志
+    task_flag: Arc<AtomicBool>,
     task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
     /// 节点已被 pk 删除，应暂停任务并重新注册
     node_deleted: Arc<AtomicBool>,
     /// 节点被删除时通知主循环
+    deleted_flag: Arc<AtomicBool>,
     deleted_notify: Arc<Notify>,
 }
 
@@ -63,42 +68,66 @@ impl WsClient {
     /// 启动 WebSocket 客户端（后台自动重连）
     pub fn spawn(node_id: Uuid, master: String, base_dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<String>(128);
+        let config_flag = Arc::new(AtomicBool::new(false));
         let config_notify = Arc::new(Notify::new());
+        let task_flag = Arc::new(AtomicBool::new(false));
         let task_notify = Arc::new(Notify::new());
         let connected = Arc::new(AtomicBool::new(false));
         let node_deleted = Arc::new(AtomicBool::new(false));
+        let deleted_flag = Arc::new(AtomicBool::new(false));
         let deleted_notify = Arc::new(Notify::new());
 
         tokio::spawn(connection_loop(
             node_id,
             master,
             rx,
+            config_flag.clone(),
             config_notify.clone(),
+            task_flag.clone(),
             task_notify.clone(),
             connected.clone(),
             base_dir,
             node_deleted.clone(),
+            deleted_flag.clone(),
             deleted_notify.clone(),
         ));
 
         Self {
             tx,
+            config_flag,
             config_notify,
+            task_flag,
             task_notify,
             connected,
             node_deleted,
+            deleted_flag,
             deleted_notify,
         }
     }
 
     /// 等待 PK 推送 config_changed 通知
+    ///
+    /// 实现要点：必须先 `enable()` 注册 waiter 再检查 flag，
+    /// 否则会出现 "flag 检查为 false 后、await 之前" 的 race 导致信号永久丢失。
     pub async fn wait_config_change(&self) {
-        self.config_notify.notified().await;
+        let notified = self.config_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.config_flag.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        notified.await;
     }
 
     /// 等待 PK 推送 new_task 通知（共享待下发池有新任务）
     pub async fn wait_new_task(&self) {
-        self.task_notify.notified().await;
+        let notified = self.task_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.task_flag.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        notified.await;
     }
 
     /// 检查节点是否已被 pk 删除
@@ -113,17 +142,32 @@ impl WsClient {
 
     /// 等待节点被删除（用于主循环唤醒）
     pub async fn wait_node_deleted(&self) {
-        self.deleted_notify.notified().await;
+        let notified = self.deleted_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.deleted_flag.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        notified.await;
     }
 
     /// 主动触发一次 config 拉取（用于首次连接或重连后）
     pub fn notify_config_change(&self) {
-        self.config_notify.notify_waiters();
+        self.config_flag.store(true, Ordering::Release);
+        self.config_notify.notify_one();
     }
 
     /// 主动触发一次任务领取（用于首次连接或重连后）
     pub fn notify_new_task(&self) {
-        self.task_notify.notify_waiters();
+        self.task_flag.store(true, Ordering::Release);
+        self.task_notify.notify_one();
+    }
+
+    /// 触发一次 node_deleted 信号（保留公开 API，便于外部使用；当前未在 agent 中直接调用）
+    #[allow(dead_code)]
+    pub fn notify_node_deleted(&self) {
+        self.deleted_flag.store(true, Ordering::Release);
+        self.deleted_notify.notify_one();
     }
 
     pub fn is_connected(&self) -> bool {
@@ -187,8 +231,17 @@ impl WsClient {
     }
 
     async fn send_json<T: Serialize>(&self, msg: &T) {
-        if let Ok(json) = serde_json::to_string(msg) {
-            let _ = self.tx.send(json).await;
+        let json = match serde_json::to_string(msg) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("[ws] failed to serialize outgoing message: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.tx.send(json).await {
+            // 通道关闭意味着后台 ws 连接已彻底断开，主循环会重连，
+            // 这里只记录不再重试（避免积压）。
+            tracing::warn!("[ws] send_json dropped: tx closed ({e})");
         }
     }
 }
@@ -200,11 +253,14 @@ async fn connection_loop(
     node_id: Uuid,
     master: String,
     mut rx: mpsc::Receiver<String>,
+    config_flag: Arc<AtomicBool>,
     config_notify: Arc<Notify>,
+    task_flag: Arc<AtomicBool>,
     task_notify: Arc<Notify>,
     connected: Arc<AtomicBool>,
     base_dir: PathBuf,
     node_deleted: Arc<AtomicBool>,
+    deleted_flag: Arc<AtomicBool>,
     deleted_notify: Arc<Notify>,
 ) {
     let ws_base = ws_base(&master);
@@ -216,8 +272,11 @@ async fn connection_loop(
                 connected.store(true, Ordering::SeqCst);
                 log!("[ws] connected to {}", ws_url);
                 // 连接成功后通知拉一次 config 和尝试领取任务
-                config_notify.notify_waiters();
-                task_notify.notify_waiters();
+                // 先置 flag 再 notify，避免 notify_one() 时无 waiter 导致信号丢失
+                config_flag.store(true, Ordering::Release);
+                config_notify.notify_one();
+                task_flag.store(true, Ordering::Release);
+                task_notify.notify_one();
 
                 let (mut write, mut read) = ws_stream.split();
 
@@ -231,11 +290,13 @@ async fn connection_loop(
                                         match server_msg {
                                             ServerMsg::ConfigChanged => {
                                                 log!("[ws] config_changed received");
-                                                config_notify.notify_waiters();
+                                                config_flag.store(true, Ordering::Release);
+                                                config_notify.notify_one();
                                             }
                                             ServerMsg::NewTask => {
                                                 log!("[ws] new_task received");
-                                                task_notify.notify_waiters();
+                                                task_flag.store(true, Ordering::Release);
+                                                task_notify.notify_one();
                                             }
                                             ServerMsg::Ping => {
                                                 let pong = serde_json::to_string(&ClientMsg::Pong).unwrap_or_default();
@@ -246,9 +307,12 @@ async fn connection_loop(
                                             ServerMsg::NodeDeleted => {
                                                 log!("[ws] node_deleted received, pausing tasks and triggering re-register");
                                                 node_deleted.store(true, Ordering::SeqCst);
-                                                deleted_notify.notify_waiters();
-                                                task_notify.notify_waiters();
-                                                config_notify.notify_waiters();
+                                                deleted_flag.store(true, Ordering::Release);
+                                                deleted_notify.notify_one();
+                                                task_flag.store(true, Ordering::Release);
+                                                task_notify.notify_one();
+                                                config_flag.store(true, Ordering::Release);
+                                                config_notify.notify_one();
                                             }
                                             ServerMsg::DeleteFile { filename, save_path } => {
                                                 let dir = match save_path {
