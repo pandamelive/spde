@@ -295,7 +295,8 @@ async fn run_serve_logic(paths: &SpdePaths) -> Result<()> {
             } else {
                 WriterType::Disk
             };
-            let writer = match create_writer(writer_type, Some(save_path.clone()), file_size) {
+            let writer = match create_writer(writer_type, Some(save_path.clone()), file_size).await
+            {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("[error] {}: create writer failed: {:#}", name, e);

@@ -8,4 +8,4 @@ pub mod writer_factory;
 pub use file_writer::FileChunkWriter;
 pub use null_writer::NullChunkWriter;
 pub use resume_bitmap::{bitmap_path_for, ResumeBitmap};
-pub use writer_factory::{create_writer, MemoryWriter, WriterType};
+pub use writer_factory::{create_writer, WriterType};
