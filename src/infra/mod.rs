@@ -7,6 +7,8 @@ pub mod disk;
 pub mod file;
 pub mod ftp;
 pub mod http;
+pub mod pdc_client;
+pub mod pk_client;
 pub mod ssh;
 pub mod torrent;
 
