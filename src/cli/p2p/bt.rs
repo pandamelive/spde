@@ -17,8 +17,6 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use librqbit::api::TorrentIdOrHash;
-use librqbit::http_api_types::PeerStatsFilter;
 use librqbit::storage::{StorageFactory, StorageFactoryExt, TorrentStorage};
 use librqbit::{ManagedTorrentShared, TorrentMetadata};
 use tokio::sync::mpsc;
@@ -377,16 +375,7 @@ impl BtDownloader {
             if let Ok(details) =
                 api.api_torrent_details(librqbit::api::TorrentIdOrHash::Id(torrent_id))
             {
-                eprintln!(
-                    "[bt] step3: poll, total_pieces={}, has_stats={}",
-                    details.total_pieces,
-                    details.stats.is_some()
-                );
                 if let Some(ref stats) = details.stats {
-                    eprintln!(
-                        "[bt] step3: stats total={}, progress={}, state={:?}",
-                        stats.total_bytes, stats.progress_bytes, stats.state
-                    );
                     if stats.total_bytes > 0 {
                         break stats.total_bytes;
                     }
@@ -399,8 +388,6 @@ impl BtDownloader {
                         }
                     }
                 }
-            } else {
-                eprintln!("[bt] step3: api_torrent_details returned Err");
             }
 
             tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -419,8 +406,6 @@ impl BtDownloader {
         let mut final_finished = false;
 
         eprintln!("[bt] step4: starting download progress polling...");
-
-        let mut last_diag = Instant::now();
 
         loop {
             if cancel.is_cancelled() {
@@ -451,9 +436,6 @@ impl BtDownloader {
                     0.0
                 };
 
-                eprintln!("[bt] step4: progress={:.1}% ({}/{} bytes), speed={} B/s, finished={}, state={:?}",
-                    percent, downloaded_bytes, total_bytes, speed_bps, stats.finished, stats.state);
-
                 let progress = DownloadProgress {
                     downloaded_bytes,
                     total_bytes,
@@ -476,49 +458,7 @@ impl BtDownloader {
                     break;
                 }
             } else {
-                eprintln!(
-                    "[bt] step4: api_stats_v1 returned Err (torrent may still be initializing)"
-                );
-            }
-
-            // 诊断：peer 连接状态和 DHT（每 5 秒）
-            if last_diag.elapsed() > Duration::from_secs(5) {
-                last_diag = Instant::now();
-                match api
-                    .api_peer_stats(TorrentIdOrHash::Id(torrent_id), PeerStatsFilter::default())
-                {
-                    Ok(peer_stats) => {
-                        let total = peer_stats.peers.len();
-                        let live = peer_stats
-                            .peers
-                            .values()
-                            .filter(|p| p.state == "live")
-                            .count();
-                        let fetched: u64 = peer_stats
-                            .peers
-                            .values()
-                            .map(|p| p.counters.fetched_bytes)
-                            .sum();
-                        let errors: u32 =
-                            peer_stats.peers.values().map(|p| p.counters.errors).sum();
-                        let conn_attempts: u32 = peer_stats
-                            .peers
-                            .values()
-                            .map(|p| p.counters.connection_attempts)
-                            .sum();
-                        eprintln!("[bt] diag: peers={}, live={}, fetched={}B, errors={}, conn_attempts={}",
-                            total, live, fetched, errors, conn_attempts);
-                        for (i, (id, stats)) in peer_stats.peers.iter().take(5).enumerate() {
-                            eprintln!("[bt] diag peer[{}]: id={}, state={}, fetched={}B, err={}, client={:?}",
-                                i, id, stats.state, stats.counters.fetched_bytes, stats.counters.errors, stats.client_name);
-                        }
-                    }
-                    Err(e) => eprintln!("[bt] diag: api_peer_stats failed: {}", e),
-                }
-                match api.api_dht_stats() {
-                    Ok(dht) => eprintln!("[bt] diag: dht={:?}", dht),
-                    Err(e) => eprintln!("[bt] diag: dht failed: {}", e),
-                }
+                // torrent 可能仍在初始化，stats 暂不可用
             }
 
             tokio::time::sleep(Duration::from_millis(2000)).await;

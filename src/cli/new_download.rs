@@ -9,7 +9,7 @@
 //!
 //! 支持协议：HTTP/HTTPS、FTP/FTPS、SSH/SFTP/SCP、BitTorrent（磁力链接/种子文件）、本地文件
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,8 +44,11 @@ pub struct NewDownloadResult {
 }
 
 /// 把 Option<Duration> 转换成 u64 秒数
+///
+/// 默认 120s：单 chunk 下载超时不超过 PK 心跳周期的合理上限（5–10s × 30 = 150s），
+/// 避免旧默认 1800s 在单点网络异常时把整个 task 拖到 PK 回收。
 fn duration_to_secs(d: Option<std::time::Duration>) -> u64 {
-    d.map(|d| d.as_secs()).unwrap_or(1800)
+    d.map(|d| d.as_secs()).unwrap_or(120)
 }
 
 /// 协议识别结果
@@ -164,9 +167,11 @@ pub async fn create_fetcher(
 /// - `dispatch_id`: 调度 ID
 /// - `task_name`: 任务名称
 /// - `ws`: WebSocket 客户端（用于汇报进度）
-/// - `active`: 活跃任务计数
-/// - `bytes_total`: 总下载字节计数
-/// - `last_error`: 最后错误信息
+/// - `bytes_total`: 总下载字节计数（atomic，跨任务累加）
+/// - `last_error`: 最后错误信息（用于 status_loop 上报）
+/// - `controller`: 下载控制器（外部 pause/cancel 会通过 cancellation token
+///   立即作用于底层 fetcher，移除旧实现的"丢弃 _ctrl_clone"导致外部 cancel 失效问题）
+/// - `bt_manager`: BT 管理器（仅 BT 任务使用）
 ///
 /// # 返回
 /// 下载结果
@@ -178,17 +183,15 @@ pub async fn execute_download(
     dispatch_id: Uuid,
     task_name: &str,
     ws: &WsClient,
-    active: &Arc<AtomicU32>,
     bytes_total: &Arc<AtomicU64>,
     last_error: &Arc<Mutex<Option<String>>>,
+    controller: Option<&crate::service::controller::DownloadController>,
     bt_manager: Option<&p2p::manager::BtManager>,
 ) -> Result<NewDownloadResult> {
     let started = Instant::now();
-    active.fetch_add(1, Ordering::Relaxed);
 
     // 通知 PK 任务开始
     ws.send_task_started(dispatch_id).await;
-    eprintln!("[download] task report sent");
 
     // 创建保存目录（dry_run 模式下不创建目录，实现真正的不落盘）
     if !params.dry_run {
@@ -208,6 +211,11 @@ pub async fn execute_download(
 
         let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
         let cancel = CancellationToken::new();
+
+        // 接入 DownloadController：外部 cancel() 会通过 watcher 在 100ms 内
+        // 触发 cancel token，p2p 模块可借此快速终止（之前的 _ctrl_clone 被丢弃，
+        // controller 形同虚设，外部 cancel 实际无效）。
+        spawn_controller_watcher(controller, &cancel);
 
         let ws_clone = ws.clone();
         let task_name_clone = task_name.to_string();
@@ -242,7 +250,8 @@ pub async fn execute_download(
         )
         .await;
 
-        let _ = progress_handle.await;
+        // P2P 路径同样不再 await forwarding task（fire-and-forget），原因见 HTTP 路径。
+        let _ = progress_handle;
 
         let elapsed = started.elapsed().as_secs_f64();
         let (success, total_bytes, downloaded, error_msg) = match p2p_result {
@@ -278,8 +287,6 @@ pub async fn execute_download(
             error_msg: error_msg.as_deref(),
         })
         .await;
-
-        active.fetch_sub(1, Ordering::Relaxed);
 
         info!(
             url = %url,
@@ -323,7 +330,6 @@ pub async fn execute_download(
 
     // 步骤 4：添加源到调度器
     scheduler.add_source(fetcher.clone()).await;
-    eprintln!("[download] task report sent");
 
     // 步骤 5：创建写入器
     let writer_type = if params.dry_run {
@@ -338,13 +344,17 @@ pub async fn execute_download(
         Err(_) => 0,
     };
 
-    let writer = create_writer(writer_type, Some(save_path.clone()), file_size)?;
+    let writer = create_writer(writer_type, Some(save_path.clone()), file_size).await?;
 
     // 步骤 6：创建进度通道
     let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(100);
 
     // 步骤 7：创建取消令牌
     let cancel = CancellationToken::new();
+
+    // 接入 DownloadController（修 bug #5）：外部 cancel() 会通过 watcher 在 100ms 内
+    // 触发 cancel token，scheduler 内部 worker 借此快速退出。
+    spawn_controller_watcher(controller, &cancel);
 
     // 进度转发任务：从通道接收进度，推送给 PK
     let ws_clone = ws.clone();
@@ -364,23 +374,21 @@ pub async fn execute_download(
                     elapsed_secs,
                 })
                 .await;
-            eprintln!("[download] task report sent");
         }
     });
 
     // 步骤 8：执行下载
     info!(url = %url, "starting download with new architecture");
-    eprintln!("[download] scheduler.execute returned");
     let result = scheduler.execute(writer, progress_tx, cancel).await;
-    eprintln!("[download] task report sent");
-    eprintln!(
-        "[download] result: {:?}",
-        result.as_ref().map(|r| (r.success, r.total_bytes))
-    );
 
-    // 等待进度转发完成
-    let _ = progress_handle.await;
-    eprintln!("[download] task report sent");
+    // 不再 await progress_handle：progress forwarding task 在 ws 半死时会卡在
+    // `ws.send_task_progress().await` 上，进而阻塞 execute_download 不返回，
+    // 最终导致 agent 端的 permit 永久不释放、主循环卡死、任务被 PK 回收。
+    // forwarding task 自身没有 panic/泄漏风险（持 channel receiver，
+    // sender drop 时自然退出），fire-and-forget 让其后台自然消亡。
+    // 关键修复是 progress reporter 已改 try_send + scheduler.execute 末尾触发 cancel，
+    // 这里不再需要等转发 task 结束。
+    let _ = progress_handle;
 
     let elapsed = started.elapsed().as_secs_f64();
 
@@ -428,9 +436,6 @@ pub async fn execute_download(
         error_msg: error_msg.as_deref(),
     })
     .await;
-    eprintln!("[download] task report sent");
-
-    active.fetch_sub(1, Ordering::Relaxed);
 
     info!(
         url = %url,
@@ -461,4 +466,29 @@ pub fn should_use_new_downloader(
     _cfg: &SpdeConfig,
 ) -> bool {
     true
+}
+
+/// 把 `DownloadController` 的取消信号桥接到 `CancellationToken`。
+///
+/// 监听轮询粒度 100ms：外部 `controller.cancel()` 触发后最多 100ms 内
+/// `token.cancel()` 被调用，下游 fetcher/scheduler 借此快速退出。
+///
+/// 之前 `_ctrl_clone` 被丢弃、controller 完全无效，这是 bug #5 的根因。
+fn spawn_controller_watcher(
+    controller: Option<&crate::service::controller::DownloadController>,
+    token: &pandanetos::domain::CancellationToken,
+) {
+    if let Some(ctrl) = controller {
+        let ctrl = ctrl.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            loop {
+                if ctrl.is_cancelled() {
+                    token.cancel();
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+    }
 }

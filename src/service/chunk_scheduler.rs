@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use pandanetos::domain::{CancellationToken, DownloadProgress};
+use pandanetos::domain::{CancellationToken, ChunkWriter, DownloadProgress};
 use pandanetos::error::{CoreError, Result};
 
 use crate::domain::adaptive::{AdaptiveConfig, AdaptiveController, DownloadSnapshot};
@@ -118,7 +118,7 @@ impl ChunkScheduler {
 
     pub async fn execute(
         &self,
-        writer: Arc<Mutex<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        writer: Arc<dyn ChunkWriter>,
         progress_tx: mpsc::Sender<DownloadProgress>,
         cancel: CancellationToken,
     ) -> Result<DownloadResult> {
@@ -127,7 +127,6 @@ impl ChunkScheduler {
         let source_count = self.source_pool.len().await;
 
         info!(source_count = source_count, "starting chunk scheduler");
-        eprintln!("[scheduler] starting, source_count={}", source_count);
 
         let (file_size, capabilities) = self.probe_all_sources().await?;
 
@@ -162,15 +161,6 @@ impl ChunkScheduler {
 
         let total_chunks = chunk_tasks.len() as u32;
         info!(total_chunks = total_chunks, "chunk tasks created");
-        eprintln!(
-            "[scheduler] chunk tasks created, total_chunks={}, concurrency={}",
-            total_chunks,
-            if capabilities.supports_multi_connection {
-                "multi"
-            } else {
-                "single"
-            }
-        );
 
         let progress_handle = self.spawn_progress_reporter(
             file_size,
@@ -205,15 +195,20 @@ impl ChunkScheduler {
             worker_handles.push(handle);
         }
 
-        eprintln!("[scheduler] waiting for {} workers", worker_handles.len());
         for handle in worker_handles {
-            eprintln!("[scheduler] worker completed");
             let _ = handle.await;
         }
 
-        eprintln!("[scheduler] all workers done, dropping progress_handle");
+        // 所有 worker 已退出（progress reporter 内部用 try_send 不会再阻塞）。
+        // 触发 cancel 让 reporter 看到退出信号并在下一次循环检测时退出。
+        // 合约：调用方传入的 cancel token 在 execute() 返回时一定会被 set；
+        // 如果调用方希望保留 token 语义，应 clone 一份再传入。
+        cancel.cancel();
+
+        // 让 reporter 自然退出：reporter 检测到 cancel 后 break，
+        // 之后 task 自动结束。handle 不在此处 await，避免 reporter 退不出时
+        // 阻塞 execute 返回（fire-and-forget）。
         drop(progress_handle);
-        eprintln!("[scheduler] progress_handle dropped");
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let total_bytes = self
@@ -255,10 +250,6 @@ impl ChunkScheduler {
             "download completed"
         );
 
-        eprintln!(
-            "[scheduler] execute returning, success={}, bytes={}",
-            result.success, result.total_bytes
-        );
         Ok(result)
     }
 
@@ -299,7 +290,6 @@ impl ChunkScheduler {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[probe] source probe failed: {}", e);
                     last_error = e.to_string();
                     warn!(
                         source = %source.display_name,
@@ -369,7 +359,7 @@ impl ChunkScheduler {
         worker_id: u32,
         chunk_queue: Arc<Mutex<Vec<ChunkTask>>>,
         semaphore: Arc<Semaphore>,
-        writer: Arc<Mutex<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        writer: Arc<dyn ChunkWriter>,
         success_count: Arc<std::sync::atomic::AtomicU32>,
         failure_count: Arc<std::sync::atomic::AtomicU32>,
         cancel: CancellationToken,
@@ -381,7 +371,6 @@ impl ChunkScheduler {
 
         tokio::spawn(async move {
             active_workers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("[worker {}] started", worker_id);
 
             loop {
                 if cancel.is_cancelled() {
@@ -395,15 +384,8 @@ impl ChunkScheduler {
                 };
 
                 let task = match task {
-                    Some(t) => {
-                        eprintln!(
-                            "[worker {}] got chunk_id={}, offset={}, length={}",
-                            worker_id, t.chunk_id, t.offset, t.length
-                        );
-                        t
-                    }
+                    Some(t) => t,
                     None => {
-                        eprintln!("[worker {}] no more chunks, exiting", worker_id);
                         debug!(worker_id = worker_id, "no more chunks, worker exiting");
                         break;
                     }
@@ -417,7 +399,6 @@ impl ChunkScheduler {
                 let fetcher = match source_pool.best_source().await {
                     Some(f) => f,
                     None => {
-                        eprintln!("[worker {}] no more chunks, exiting", worker_id);
                         warn!(worker_id = worker_id, "no source available, retrying chunk");
                         let mut queue = chunk_queue.lock().await;
                         queue.push(task);
@@ -427,22 +408,36 @@ impl ChunkScheduler {
                     }
                 };
 
-                eprintln!("[worker {}] calling fetch_chunk", worker_id);
-                let result = {
-                    eprintln!("[worker {}] acquiring writer lock", worker_id);
-                    let mut writer_guard = writer.lock().await;
-                    eprintln!("[worker {}] writer lock acquired", worker_id);
-                    fetcher
-                        .fetch_chunk(task.offset, task.length, &mut *writer_guard)
-                        .await
+                // 关键修复（bug #1）：旧实现把整个 fetch 过程锁在 writer mutex 里，
+                // N 个 worker 实际并发度=1，任何慢分片都让全员排队。
+                // 新实现：fetcher 写入本地 Vec<u8>（tokio::io::AsyncWrite 对 Vec<u8> 的
+                // poll_write 是同步 Ready，所以 fetcher 内部 write_all 不会卡），
+                // fetch 完成后调度器并发调用 writer.write_at(offset, &buf)。
+                // ChunkWriter trait 的 write_at 内部用 pwrite/seek_write，多 worker
+                // 并发写不同 offset 是天然安全的，不需要外层锁。
+                let mut buffer = Vec::<u8>::with_capacity(task.length as usize);
+                let fetch_result = fetcher
+                    .fetch_chunk(
+                        task.offset,
+                        task.length,
+                        &mut buffer as &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+                    )
+                    .await;
+
+                let result = match fetch_result {
+                    Ok(stats) => {
+                        // fetch 完成后并发 write_at 到磁盘（pwrite/seek_write 并发安全）
+                        if let Err(e) = writer.write_at(task.offset, &buffer).await {
+                            Err(e)
+                        } else {
+                            Ok(stats)
+                        }
+                    }
+                    Err(e) => Err(e),
                 };
 
                 match result {
                     Ok(stats) => {
-                        eprintln!(
-                            "[worker {}] fetch_chunk success, bytes={}",
-                            worker_id, stats.bytes_downloaded
-                        );
                         debug!(
                             worker_id = worker_id,
                             chunk_id = task.chunk_id,
@@ -467,7 +462,6 @@ impl ChunkScheduler {
                             .await;
                     }
                     Err(e) => {
-                        eprintln!("[probe] source probe failed: {}", e);
                         warn!(
                             worker_id = worker_id,
                             chunk_id = task.chunk_id,
@@ -545,8 +539,22 @@ impl ChunkScheduler {
                     elapsed_secs: 0.0,
                 };
 
-                if progress_tx.send(progress).await.is_err() {
-                    break;
+                // 用 try_send 而非 send：调用方（progress_rx）满载或慢接收时丢弃本帧进度，
+                // 而不是在 channel 满时永久阻塞 reporter。旧实现 send().await 在慢接收场景下
+                // 会让 reporter hang、scheduler.execute 不返回、permit 永久不释放、
+                // agent 主循环卡死，最终 PK 判定 worker 失联回收任务。
+                // 接收端关闭（rx drop）时返回 Err，正常退出 reporter。
+                match progress_tx.try_send(progress) {
+                    Ok(_) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        debug!(
+                            current_bytes = current_bytes,
+                            "progress channel full, dropping this frame"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        break;
+                    }
                 }
 
                 let snapshot = DownloadSnapshot {

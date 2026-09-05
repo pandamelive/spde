@@ -374,7 +374,6 @@ pub async fn run_agent(paths: &SpdePaths, master_arg: String, token_arg: String)
                     active.clone(),
                     bytes_total.clone(),
                     last_error.clone(),
-                    progress_map.clone(),
                     permit,
                     paths.base_dir.clone(),
                     task_done_tx.clone(),
@@ -499,7 +498,6 @@ fn spawn_download_task(
     active: Arc<AtomicU32>,
     bytes_total: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
-    _progress_map: ProgressMap,
     permit: OwnedSemaphorePermit,
     base_dir: PathBuf,
     task_done_tx: mpsc::Sender<Uuid>,
@@ -513,11 +511,14 @@ fn spawn_download_task(
     let params = resolve_task_params(&task.overrides, &cfg, &base_dir);
 
     let controller = Arc::new(DownloadController::new());
-    let _ctrl_clone = controller.clone();
+    // 闭包内需要 controller 的引用，而 async move 会按 value 把 controller 移进 spawned task。
+    // 在 spawn 前 clone() 一份交给闭包，原 controller 留作返回值。
+    let controller_for_task = controller.clone();
     let handle = tokio::spawn(async move {
-        // ctrl_clone 即主循环持有的同一控制器：外部 cancel/pause 会立刻作用于下载器
-        // permit 已在主循环中获取，这里直接持有直到任务结束
-        active.fetch_add(1, Ordering::Relaxed);
+        // RAII guard：无论 execute_download 正常返回还是 panic，permit 和 active 计数
+        // 都会被释放。原来的写法在 panic 路径上 `drop(permit)` 不会执行，导致
+        // semaphore 槽位永久泄漏，主循环再也拿不到 permit 而卡死。
+        let guard = TaskGuard::new(permit, active.clone(), task_done_tx.clone(), dispatch_id);
 
         // 全部使用新架构（智能下载架构）
         log!(
@@ -532,9 +533,9 @@ fn spawn_download_task(
             dispatch_id,
             &name,
             &ws,
-            &active,
             &bytes_total,
             &last_error,
+            Some(controller_for_task.as_ref()),
             Some(&bt_manager),
         )
         .await;
@@ -553,10 +554,66 @@ fn spawn_download_task(
             }
         }
 
-        active.fetch_sub(1, Ordering::Relaxed);
-        drop(permit);
-        let _ = task_done_tx.send(dispatch_id).await;
+        // 显式 disarm guard（不做资源回收，让 Drop 自然运行）
+        guard.finish();
     });
 
     (dispatch_id, handle, controller)
+}
+
+/// RAII guard：持有 semaphore permit、active 计数、task_done_tx 的发送端。
+/// 在 drop 时统一释放，确保 panic 路径下也能归还 permit。
+struct TaskGuard {
+    permit: Option<OwnedSemaphorePermit>,
+    active: Arc<AtomicU32>,
+    task_done_tx: mpsc::Sender<Uuid>,
+    dispatch_id: Uuid,
+    finished: bool,
+}
+
+impl TaskGuard {
+    fn new(
+        permit: OwnedSemaphorePermit,
+        active: Arc<AtomicU32>,
+        task_done_tx: mpsc::Sender<Uuid>,
+        dispatch_id: Uuid,
+    ) -> Self {
+        active.fetch_add(1, Ordering::Relaxed);
+        Self {
+            permit: Some(permit),
+            active,
+            task_done_tx,
+            dispatch_id,
+            finished: false,
+        }
+    }
+
+    /// 任务正常完成路径上调用，让 Drop 不再重复发送 task_done_tx（节省一次异步 send）。
+    fn finish(mut self) {
+        self.finished = true;
+        // permit 显式绑定到局部变量，follow Drop 语义归还 semaphore slot。
+        // 直接 `self.permit.take().expect(...)` 会被编译器 warn "unused OwnedSemaphorePermit that must be used"，
+        // 因为 take() 的返回值是 #[must_use] 资源类型，必须被命名。
+        // active 计数减 1 在 Drop 里统一处理
+        let _permit = self.permit.take().expect("permit taken twice");
+        drop(_permit);
+    }
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        // permit 由 Option::take 在 finish() 中处理；未 finish 时（panic 路径）也要释放
+        if self.permit.is_some() {
+            self.permit.take();
+        }
+        self.active.fetch_sub(1, Ordering::Relaxed);
+        if !self.finished {
+            // panic 路径：fire-and-forget 通知主循环清理 running 表
+            let tx = self.task_done_tx.clone();
+            let id = self.dispatch_id;
+            tokio::spawn(async move {
+                let _ = tx.send(id).await;
+            });
+        }
+    }
 }
