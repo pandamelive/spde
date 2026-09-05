@@ -9,6 +9,8 @@ pub mod ftp;
 pub mod http;
 pub mod ssh;
 pub mod torrent;
+pub mod pdc_client;
+pub mod pk_client;
 
 pub use disk::file_writer::FileChunkWriter;
 pub use file::downloader::FileChunkDownloader;

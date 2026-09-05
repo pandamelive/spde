@@ -10,8 +10,13 @@
 
 pub mod downloader;
 pub mod fetcher;
+pub mod metadata;
+pub mod download_queue;
+pub mod pex;
+pub mod bt_connection;
 pub mod source;
 
 pub use downloader::TorrentChunkDownloader;
 pub use fetcher::TorrentPieceFetcher;
+pub use metadata::MetadataDownloader;
 pub use source::{TorrentSource, TorrentSourceType};

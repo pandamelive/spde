@@ -26,6 +26,9 @@ license = "MIT"
 pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
 crossbeam = "0.8"
 rand = "0.8"
+hex = "0.4"
+serde_bencode = "0.2"
+sha1 = "0.10"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { workspace = true }
