@@ -101,16 +101,12 @@ impl PkClient {
             .with_context(|| format!("推送 metadata 到 pk 失败: {}", url))?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "pk 返回状态: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("pk 返回状态: {}", resp.status()));
         }
 
         info!(
             "[pk] 已推送 metadata: {} ({})",
-            metadata.name,
-            metadata.infohash
+            metadata.name, metadata.infohash
         );
         Ok(())
     }

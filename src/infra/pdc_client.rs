@@ -89,10 +89,7 @@ impl PdcClient {
             .with_context(|| format!("请求 PDC discover 失败: {}", url))?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "PDC discover 返回状态: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("PDC discover 返回状态: {}", resp.status()));
         }
 
         let result: DiscoverResponse = resp.json().await.context("解析 PDC 响应失败")?;

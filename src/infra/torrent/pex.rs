@@ -13,13 +13,12 @@
 //! - added6.f: IPv6 peer 标志位
 //! - dropped6: 离开的 IPv6 peer
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use serde_bencode::value::Value;
-use tracing::{debug, trace};
+use tracing::trace;
 
 /// PEX 消息
 #[derive(Debug, Clone, Default)]
@@ -127,7 +126,10 @@ impl PexMessage {
 
         // added
         if !self.added.is_empty() {
-            dict.insert("added".to_string(), Value::Bytes(encode_compact_peers_v4(&self.added)));
+            dict.insert(
+                "added".to_string(),
+                Value::Bytes(encode_compact_peers_v4(&self.added)),
+            );
         }
 
         // added.f
@@ -171,9 +173,7 @@ impl PexMessage {
         }
 
         let bytes = serde_bencode::to_bytes(&Value::Dict(
-            dict.into_iter()
-                .map(|(k, v)| (k.into_bytes(), v))
-                .collect(),
+            dict.into_iter().map(|(k, v)| (k.into_bytes(), v)).collect(),
         ))
         .map_err(|e| anyhow::anyhow!("PEX 消息序列化失败: {}", e))?;
 
@@ -255,11 +255,14 @@ impl PexManager {
             return None;
         }
 
-        let state = self.peer_states.entry(peer_id.to_string()).or_insert(PeerPexState {
-            sent: HashSet::new(),
-            last_sent: None,
-            received: HashSet::new(),
-        });
+        let state = self
+            .peer_states
+            .entry(peer_id.to_string())
+            .or_insert(PeerPexState {
+                sent: HashSet::new(),
+                last_sent: None,
+                received: HashSet::new(),
+            });
 
         // 找出未发送过的 peer（排除 peer 自己）
         let new_peers: Vec<SocketAddr> = self
@@ -285,14 +288,10 @@ impl PexManager {
             .into_iter()
             .partition(|addr| matches!(addr.ip(), IpAddr::V4(_)));
 
-        let flags_v4: Vec<PexPeerFlags> = added_v4
-            .iter()
-            .map(|_| PexPeerFlags::default())
-            .collect();
-        let flags_v6: Vec<PexPeerFlags> = added_v6
-            .iter()
-            .map(|_| PexPeerFlags::default())
-            .collect();
+        let flags_v4: Vec<PexPeerFlags> =
+            added_v4.iter().map(|_| PexPeerFlags::default()).collect();
+        let flags_v6: Vec<PexPeerFlags> =
+            added_v6.iter().map(|_| PexPeerFlags::default()).collect();
 
         Some(PexMessage {
             added: added_v4,
@@ -308,11 +307,14 @@ impl PexManager {
     ///
     /// 返回新发现的 peer 列表（之前全局池中没有的）
     pub fn handle_message(&mut self, peer_id: &str, msg: &PexMessage) -> Vec<SocketAddr> {
-        let state = self.peer_states.entry(peer_id.to_string()).or_insert(PeerPexState {
-            sent: HashSet::new(),
-            last_sent: None,
-            received: HashSet::new(),
-        });
+        let state = self
+            .peer_states
+            .entry(peer_id.to_string())
+            .or_insert(PeerPexState {
+                sent: HashSet::new(),
+                last_sent: None,
+                received: HashSet::new(),
+            });
 
         let mut new_peers = vec![];
 

@@ -14,10 +14,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
-use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use pandanetos::bittorrent::{Infohash, MetadataInfo};
+use pandanetos::bittorrent::Infohash;
 
 use super::metadata::MetadataDownloader;
 use crate::infra::pdc_client::PdcClient;
@@ -74,10 +73,7 @@ pub struct DownloadQueue {
 
 impl DownloadQueue {
     /// 创建新的下载队列
-    pub fn new(
-        config: DownloadQueueConfig,
-        metadata_downloader: Arc<MetadataDownloader>,
-    ) -> Self {
+    pub fn new(config: DownloadQueueConfig, metadata_downloader: Arc<MetadataDownloader>) -> Self {
         DownloadQueue {
             config,
             queue: Mutex::new(VecDeque::new()),
@@ -174,17 +170,15 @@ impl DownloadQueue {
                 let mut queue = self.queue.lock().await;
                 // 找到第一个可以执行的任务（next_attempt 已过或为 None）
                 let now = Instant::now();
-                let idx = queue.iter().position(|t| {
-                    t.next_attempt.map(|t| t <= now).unwrap_or(true)
-                });
+                let idx = queue
+                    .iter()
+                    .position(|t| t.next_attempt.map(|t| t <= now).unwrap_or(true));
                 idx.and_then(|i| queue.remove(i))
             };
 
             let Some(task) = task else {
                 // 没有可执行的任务
-                if self.queue.lock().await.is_empty()
-                    && self.in_progress.lock().await.is_empty()
-                {
+                if self.queue.lock().await.is_empty() && self.in_progress.lock().await.is_empty() {
                     break;
                 }
                 // 等待一下再检查
@@ -265,10 +259,7 @@ impl DownloadQueue {
                 "[queue] 最终失败: {} (重试 {} 次)",
                 task.infohash, task.retries
             );
-            self.failed
-                .lock()
-                .await
-                .insert(task.infohash, task.retries);
+            self.failed.lock().await.insert(task.infohash, task.retries);
         } else {
             // 指数退避后重新入队
             let delay = self.config.initial_retry_delay * 2u64.pow(task.retries - 1);

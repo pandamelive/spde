@@ -74,19 +74,12 @@ impl MetadataDownloader {
     }
 
     /// 从单个 peer 下载 metadata
-    pub fn download_from_peer(
-        &self,
-        infohash: Infohash,
-        peer_addr: &str,
-    ) -> Result<MetadataInfo> {
+    pub fn download_from_peer(&self, infohash: Infohash, peer_addr: &str) -> Result<MetadataInfo> {
         info!("[metadata] 从 {} 下载 infohash={}", peer_addr, infohash);
 
         // 1. 建立 TCP 连接
-        let mut stream = TcpStream::connect_timeout(
-            &peer_addr.parse()?,
-            self.connect_timeout,
-        )
-        .with_context(|| format!("连接 peer {} 失败", peer_addr))?;
+        let mut stream = TcpStream::connect_timeout(&peer_addr.parse()?, self.connect_timeout)
+            .with_context(|| format!("连接 peer {} 失败", peer_addr))?;
         stream.set_read_timeout(Some(self.read_timeout))?;
         stream.set_write_timeout(Some(self.read_timeout))?;
 
@@ -126,7 +119,12 @@ impl MetadataDownloader {
             }
 
             metadata[offset..offset + piece_size].copy_from_slice(&data[..piece_size]);
-            debug!("[metadata] 分片 {}/{} 下载完成 ({} bytes)", piece + 1, num_pieces, piece_size);
+            debug!(
+                "[metadata] 分片 {}/{} 下载完成 ({} bytes)",
+                piece + 1,
+                num_pieces,
+                piece_size
+            );
         }
 
         // 5. 验证 infohash
@@ -140,7 +138,10 @@ impl MetadataDownloader {
         // 6. 解析 metadata
         let info = Self::parse_metadata(&metadata, infohash)?;
 
-        info!("[metadata] 下载完成: name={}, size={}", info.name, info.total_length);
+        info!(
+            "[metadata] 下载完成: name={}, size={}",
+            info.name, info.total_length
+        );
         Ok(info)
     }
 
@@ -256,10 +257,7 @@ impl MetadataDownloader {
     }
 
     /// 接收 ut_metadata data
-    fn receive_ut_metadata_data(
-        &self,
-        stream: &mut TcpStream,
-    ) -> Result<(i64, Vec<u8>)> {
+    fn receive_ut_metadata_data(&self, stream: &mut TcpStream) -> Result<(i64, Vec<u8>)> {
         let (msg_type, payload) = self.receive_extension_message(stream)?;
 
         // 解析消息头（bencode 字典）和数据
@@ -321,10 +319,7 @@ impl MetadataDownloader {
     }
 
     /// 接收 Extension 消息
-    fn receive_extension_message(
-        &self,
-        stream: &mut TcpStream,
-    ) -> Result<(u8, Vec<u8>)> {
+    fn receive_extension_message(&self, stream: &mut TcpStream) -> Result<(u8, Vec<u8>)> {
         // 读取 4 字节长度
         let mut len_buf = [0u8; 4];
         stream.read_exact(&mut len_buf)?;
@@ -401,9 +396,7 @@ impl MetadataDownloader {
     /// 解析 metadata（info 字典）为 MetadataInfo
     fn parse_metadata(data: &[u8], infohash: Infohash) -> Result<MetadataInfo> {
         let value: BencodeValue = from_bytes(data)?;
-        let dict = value
-            .as_dict()
-            .ok_or_else(|| anyhow!("无效的 info 字典"))?;
+        let dict = value.as_dict().ok_or_else(|| anyhow!("无效的 info 字典"))?;
 
         let name = dict
             .get(b"name".as_slice())
@@ -417,44 +410,48 @@ impl MetadataDownloader {
             .unwrap_or(0) as u64;
 
         // 计算总大小和文件列表
-        let (total_length, files) = if let Some(file_list) = dict.get(b"files".as_slice()).and_then(|v| v.as_list()) {
-            // 多文件模式
-            let mut total = 0u64;
-            let mut file_infos = vec![];
-            for file in file_list {
-                if let Some(fdict) = file.as_dict() {
-                    let length = fdict
-                        .get(b"length".as_slice())
-                        .and_then(|v| v.as_int())
-                        .unwrap_or(0) as u64;
-                    let path = fdict
-                        .get(b"path".as_slice())
-                        .and_then(|v| v.as_list())
-                        .map(|parts| {
-                            parts
-                                .iter()
-                                .filter_map(|p| p.as_bytes())
-                                .map(|b| String::from_utf8_lossy(b).to_string())
-                                .collect::<Vec<_>>()
-                                .join("/")
-                        })
-                        .unwrap_or_default();
-                    total += length;
-                    file_infos.push(pandanetos::bittorrent::FileInfo { path, length });
+        let (total_length, files) =
+            if let Some(file_list) = dict.get(b"files".as_slice()).and_then(|v| v.as_list()) {
+                // 多文件模式
+                let mut total = 0u64;
+                let mut file_infos = vec![];
+                for file in file_list {
+                    if let Some(fdict) = file.as_dict() {
+                        let length = fdict
+                            .get(b"length".as_slice())
+                            .and_then(|v| v.as_int())
+                            .unwrap_or(0) as u64;
+                        let path = fdict
+                            .get(b"path".as_slice())
+                            .and_then(|v| v.as_list())
+                            .map(|parts| {
+                                parts
+                                    .iter()
+                                    .filter_map(|p| p.as_bytes())
+                                    .map(|b| String::from_utf8_lossy(b).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("/")
+                            })
+                            .unwrap_or_default();
+                        total += length;
+                        file_infos.push(pandanetos::bittorrent::FileInfo { path, length });
+                    }
                 }
-            }
-            (total, file_infos)
-        } else {
-            // 单文件模式
-            let length = dict
-                .get(b"length".as_slice())
-                .and_then(|v| v.as_int())
-                .unwrap_or(0) as u64;
-            (length, vec![pandanetos::bittorrent::FileInfo {
-                path: name.clone(),
-                length,
-            }])
-        };
+                (total, file_infos)
+            } else {
+                // 单文件模式
+                let length = dict
+                    .get(b"length".as_slice())
+                    .and_then(|v| v.as_int())
+                    .unwrap_or(0) as u64;
+                (
+                    length,
+                    vec![pandanetos::bittorrent::FileInfo {
+                        path: name.clone(),
+                        length,
+                    }],
+                )
+            };
 
         let piece_count = if piece_length > 0 {
             ((total_length + piece_length - 1) / piece_length) as u32
@@ -537,11 +534,17 @@ mod tests {
     fn test_find_bencode_dict_end() {
         // 简单字典
         let data = b"d3:key5:valuee";
-        assert_eq!(MetadataDownloader::find_bencode_dict_end(data), Some(data.len()));
+        assert_eq!(
+            MetadataDownloader::find_bencode_dict_end(data),
+            Some(data.len())
+        );
 
         // 嵌套字典
         let data = b"d1:ad3:keyi1eee";
-        assert_eq!(MetadataDownloader::find_bencode_dict_end(data), Some(data.len()));
+        assert_eq!(
+            MetadataDownloader::find_bencode_dict_end(data),
+            Some(data.len())
+        );
 
         // 字典后有数据
         let data = b"d3:key5:valueeEXTRADATA";
@@ -561,7 +564,8 @@ mod tests {
     #[test]
     fn test_parse_metadata_single_file() {
         // 构造一个简单的 info 字典
-        let info = b"d6:lengthi1024e4:name8:test.txt12:piece lengthi256e6:pieces20:01234567890123456789e";
+        let info =
+            b"d6:lengthi1024e4:name8:test.txt12:piece lengthi256e6:pieces20:01234567890123456789e";
         let ih = Infohash::new([0u8; 20]);
         let meta = MetadataDownloader::parse_metadata(info, ih).unwrap();
 

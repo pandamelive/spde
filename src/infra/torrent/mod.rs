@@ -8,12 +8,12 @@
 //! 注意：由于 BitTorrent 协议是 piece 级下载，不支持字节级分片，
 //! 调度器会用单分片下载整个文件。
 
+pub mod bt_connection;
+pub mod download_queue;
 pub mod downloader;
 pub mod fetcher;
 pub mod metadata;
-pub mod download_queue;
 pub mod pex;
-pub mod bt_connection;
 pub mod source;
 
 pub use downloader::TorrentChunkDownloader;

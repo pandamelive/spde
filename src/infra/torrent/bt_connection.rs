@@ -60,8 +60,8 @@ pub struct BtConnection {
 impl BtConnection {
     /// 连接到 peer 并完成握手
     pub fn connect(addr: &str, infohash: &[u8; 20], timeout: Duration) -> Result<Self> {
-        let stream = TcpStream::connect(addr)
-            .with_context(|| format!("连接 peer 失败: {}", addr))?;
+        let stream =
+            TcpStream::connect(addr).with_context(|| format!("连接 peer 失败: {}", addr))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         stream.set_nodelay(true)?;
@@ -100,19 +100,25 @@ impl BtConnection {
 
         // 接收握手
         let mut pstrlen = [0u8; 1];
-        self.stream.read_exact(&mut pstrlen).context("读取 pstrlen 失败")?;
+        self.stream
+            .read_exact(&mut pstrlen)
+            .context("读取 pstrlen 失败")?;
         if pstrlen[0] != 19 {
             return Err(anyhow::anyhow!("无效的 pstrlen: {}", pstrlen[0]));
         }
 
         let mut pstr = [0u8; 19];
-        self.stream.read_exact(&mut pstr).context("读取 pstr 失败")?;
+        self.stream
+            .read_exact(&mut pstr)
+            .context("读取 pstr 失败")?;
         if &pstr != BT_PROTOCOL {
             return Err(anyhow::anyhow!("无效的协议标识"));
         }
 
         let mut reserved = [0u8; 8];
-        self.stream.read_exact(&mut reserved).context("读取 reserved 失败")?;
+        self.stream
+            .read_exact(&mut reserved)
+            .context("读取 reserved 失败")?;
 
         // 检查对端是否支持 Extension 协议
         let supports_extension = reserved[5] & 0x10 != 0;
@@ -121,13 +127,17 @@ impl BtConnection {
         }
 
         let mut remote_infohash = [0u8; 20];
-        self.stream.read_exact(&mut remote_infohash).context("读取 infohash 失败")?;
+        self.stream
+            .read_exact(&mut remote_infohash)
+            .context("读取 infohash 失败")?;
         if &remote_infohash != infohash {
             return Err(anyhow::anyhow!("infohash 不匹配"));
         }
 
         let mut remote_peer_id = [0u8; 20];
-        self.stream.read_exact(&mut remote_peer_id).context("读取 peer_id 失败")?;
+        self.stream
+            .read_exact(&mut remote_peer_id)
+            .context("读取 peer_id 失败")?;
         self.remote_peer_id = Some(remote_peer_id);
 
         trace!("[bt] 握手完成: {:?}", hex::encode(&remote_peer_id[..8]));
@@ -199,7 +209,9 @@ impl BtConnection {
         msg.push(EXTENDED_MESSAGE_ID);
         msg.push(ext_id);
         msg.extend_from_slice(payload);
-        self.stream.write_all(&msg).context("发送 Extension 消息失败")?;
+        self.stream
+            .write_all(&msg)
+            .context("发送 Extension 消息失败")?;
         Ok(())
     }
 
@@ -252,7 +264,8 @@ impl BtConnection {
 
     /// 发送 PEX 消息（S4）
     pub fn send_pex(&mut self, peer_addr: std::net::SocketAddr) -> Result<()> {
-        let peer_id = self.remote_peer_id
+        let peer_id = self
+            .remote_peer_id
             .map(|id| hex::encode(&id[..8]))
             .unwrap_or_else(|| "unknown".to_string());
 
@@ -268,7 +281,8 @@ impl BtConnection {
     /// 处理收到的 PEX 消息（S4）
     pub fn handle_pex(&mut self, payload: &[u8]) -> Result<Vec<std::net::SocketAddr>> {
         let msg = PexMessage::from_bytes(payload)?;
-        let peer_id = self.remote_peer_id
+        let peer_id = self
+            .remote_peer_id
             .map(|id| hex::encode(&id[..8]))
             .unwrap_or_else(|| "unknown".to_string());
         let new_peers = self.pex.handle_message(&peer_id, &msg);
