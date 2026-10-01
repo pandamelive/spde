@@ -8,19 +8,19 @@ SPDE（Super Download Engine）是 **PandaNetOS 生态**的核心下载组件。
 
 ## 生态定位
 
-本项目隶属 **PandaNetOS 生态项目群**，以生态权威标准库 [PandaNetOS](https://github.com/PandaNetOS/PandaNetOS) 为准绳：
+本项目隶属 **PandaNetOS 生态项目群**。生态标准库已由旧 `pandanetos`（PandaNetOS/PandaNetOS）迁移至 `pnos-spec`（pnos），**spde 尚未完成迁移**，当前仍依赖旧标准库，迁移前维持以下约定：
 
 | 规范维度 | 要求 |
 |---|---|
-| 共享库依赖 | 强制 path 依赖 `pandanetos`，**禁止**维护私有协议与私有常量 |
+| 共享库依赖 | path 依赖 `pandanetos`（迁移期间），禁止维护私有协议与私有常量 |
 | 协议路径 | 全部复用共享库 `protocol::paths` 路径常量 |
 | 响应格式 | 统一 `ApiResponse` / `ApiError`、生态错误码、UTC RFC3339 时间格式 |
-| 配置标准 | 遵循 PandaNetOS 配置规范，与生态各组件对齐 |
-| 标准一致性 | 节点注册、任务领取、心跳、状态上报端点与《PandaNetOS 标准规范》严格一致 |
+| 配置标准 | 遵循生态配置规范，与生态各组件对齐 |
+| 标准一致性 | 节点注册、任务领取、心跳、状态上报端点与生态标准规范严格一致 |
 
 ### 标准库路径约定
 
-本项目强制依赖生态共享标准库 `pandanetos`，使用 **path 依赖**，目录布局固定：
+本项目当前仍依赖旧标准库 `pandanetos`（生态新标准为 `pnos-spec`，迁移待办），使用 **path 依赖**，目录布局固定：
 
 ```
 <workspace>/
@@ -37,7 +37,7 @@ SPDE（Super Download Engine）是 **PandaNetOS 生态**的核心下载组件。
 pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
 ```
 
-> 克隆本仓库后，需同时克隆 `PandaNetOS/PandaNetOS` 到同级目录，否则 `cargo build` 会因找不到 path 依赖而失败。
+> ⚠️ 本生态工作区中的 `PandaNetOS/` 目录已删除：**本地直接 `cargo build` 会因找不到 path 依赖而失败**，需先将 `PandaNetOS/PandaNetOS` 克隆到同级目录。
 >
 > CI 发布构建时由 GitHub Actions 自动 checkout 标准库并修正路径，见 `.github/workflows/release.yml`。
 
@@ -53,7 +53,7 @@ pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
 
 | 项 | 值 |
 |---|---|
-| 当前版本 | **v1.1.1** |
+| 当前版本 | **v1.4.1** |
 | 发布通道 | GitHub Actions Tag（`v*`）自动构建 Release |
 | 平台矩阵 | Windows x86_64 · Linux x86_64 musl · Linux aarch64 musl · macOS x86_64 · macOS aarch64 |
 
@@ -368,7 +368,7 @@ git push origin v1.1.1
 ### 环境要求
 
 - Rust 1.75+
-- PandaNetOS 标准库（同级目录）
+- PandaNetOS 旧标准库（同级目录；迁移到 pnos-spec 前必需）
 
 ### 构建
 
@@ -384,8 +384,10 @@ cargo test --all
 
 ### 合规检查
 
-```bash
-bash ../PandaNetOS/scripts/check_compliance.sh .
+提交/推送前必须通过生态合规检查（`pandanetos-meta/check-compliance.ps1`，26 项静态检查 + 行为冒烟）：
+
+```powershell
+.\check-compliance.ps1 -ProjectPath D:\PNOS\spde
 ```
 
 ## 贡献指南
